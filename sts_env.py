@@ -611,7 +611,7 @@ if __name__ == "__main__":
     # Load existing model if available, else create new
     if os.path.exists("sts_ppo_model.zip"):
         print("Loading existing model for continued training...")
-        model = PPO.load("sts_ppo_model", env=env)
+        model = PPO.load("sts_ppo_model", env=env, device="cpu")
         print("Loaded. Continuing from previous weights.\n")
     else:
         print("No existing model — starting fresh.\n")
