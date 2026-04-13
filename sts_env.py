@@ -533,11 +533,15 @@ class STSTracker:
         """Increment play count for a card."""
         self.card_play_counts[card_id] = self.card_play_counts.get(card_id, 0) + 1
 
+    # Starter relics every character always has — not worth tracking
+    _STARTER_RELICS = {"BURNING_BLOOD", "PURE_WATER", "CRACKED_CORE", "RING_OF_THE_SNAKE"}
+
     def record_neow_relics(self, relics: list):
-        """Record relics present at floor 1 (Neow bonuses)."""
+        """Record non-starter relics (Neow picks and run gains)."""
         for relic in relics:
             rid = relic.get("relic_id", "UNKNOWN")
-            self.neow_relic_counts[rid] = self.neow_relic_counts.get(rid, 0) + 1
+            if rid not in self._STARTER_RELICS:
+                self.neow_relic_counts[rid] = self.neow_relic_counts.get(rid, 0) + 1
 
     def print_summary(self):
         print("\n── Analytics ───────────────────────────────────────────")
