@@ -21,15 +21,17 @@ import requests
 # ── Config ─────────────────────────────────────────────────────────────────────
 API = "http://127.0.0.1:8080"
 
-# Observation layout (161 total):
-#   3   player base       hp, block, energy
+# Observation layout (194 total):
+#   7   player base       hp, block, energy, stars, discard_ct, draw_ct, hand_size
 #  20   player powers     10 powers × (id_hash, amount)
-#  50   enemies           5 × 10 (hp, max_hp, block, alive, name_hash, is_elite,
-#                                 intent_atk, intent_dmg, intent_hits, power_count)
+#  65   enemies           5 × 13 (hp, max_hp, block, alive, name_hash, is_elite,
+#                                  intent_atk, intent_dmg, intent_hits, power_count,
+#                                  vulnerable_stacks, weak_stacks, is_lethal)
 #  30   enemy powers      5 enemies × 3 powers × (id_hash, amount)
 #  60   hand cards        10 × 6 (card_hash, cost, type, upgraded, playable, primary_val)
 #   3   run context       floor_pct, alive_enemies, hp_pct
-OBS_SIZE = 166
+#   9   potions           3 slots × (occupied, can_use, potion_id_hash)
+OBS_SIZE = 194
 
 # Action space: MultiDiscrete([11, 5])
 #   action[0]: 0-9 = play card at hand index, 10 = end turn
@@ -99,16 +101,37 @@ def _encode_obs(state: dict) -> np.ndarray:
 
     max_hp     = run.get("max_hp", 80)    or 80
     max_energy = run.get("max_energy", 3) or 3
+    hand       = cbt.get("hand", [])
 
-    # ── Player base (3) ──────────────────────────────────────────────────────
+    # ── Player base (7) ──────────────────────────────────────────────────────
     player_hp    = run.get("current_hp", 80) / max_hp
     player_block = player.get("block", 0) / 50.0
     energy       = player.get("energy", 0) / max_energy
+    stars        = min(player.get("stars", 0), 99) / 10.0
+    discard_ct   = len(cbt.get("discard", [])) / 20.0
+    draw_ct      = len(cbt.get("draw", [])) / 20.0
+    hand_size    = len(hand) / 10.0
 
     # ── Player powers (20 = 10 × 2) ──────────────────────────────────────────
     pp_feats = _power_feats(player.get("powers", []), max_powers=10)
 
-    # ── Enemies (27 = 3 × 9) + enemy powers (18 = 3 × 3 × 2) ────────────────
+    # ── Pre-compute max damage from lowest-cost playable attack card ──────────
+    attack_options = []
+    for card in hand:
+        if card.get("playable") and card.get("card_type") == "Attack":
+            cost = card.get("energy_cost", 99)
+            dmg  = 0
+            for dv in card.get("dynamic_values", []):
+                if dv.get("name") == "Damage":
+                    dmg = dv.get("current_value", 0)
+                    break
+            attack_options.append((cost, dmg))
+    max_lethal_dmg = 0
+    if attack_options:
+        min_cost      = min(c for c, _ in attack_options)
+        max_lethal_dmg = max(d for c, d in attack_options if c == min_cost)
+
+    # ── Enemies (65 = 5 × 13) + enemy powers (30 = 5 × 3 × 2) ──────────────
     enemies      = cbt.get("enemies", [])
     alive_count  = sum(1 for e in enemies if e.get("is_alive"))
     enemy_feats  = []
@@ -119,7 +142,8 @@ def _encode_obs(state: dict) -> np.ndarray:
             e        = enemies[i]
             alive    = 1.0 if e.get("is_alive") else 0.0
             raw_max  = max(e.get("max_hp", 1), 1)
-            ehp      = (e.get("current_hp", 0) / raw_max) * alive
+            raw_hp   = e.get("current_hp", 0)
+            ehp      = (raw_hp / raw_max) * alive
             emaxhp   = min(raw_max, 500) / 500.0
             eblk     = e.get("block", 0) / 50.0 * alive
             name_h   = _card_id_to_float(e.get("enemy_id", ""))
@@ -130,14 +154,29 @@ def _encode_obs(state: dict) -> np.ndarray:
             tot_dmg  = min(sum(x.get("total_damage") or 0 for x in atk_ints), 99) / 99.0
             hits     = min(sum(x.get("hits") or 0 for x in atk_ints), 9) / 9.0
             pow_cnt  = min(len(e.get("powers", [])), 10) / 10.0
-            enemy_feats  += [ehp, emaxhp, eblk, alive, name_h, is_elite, is_atk, tot_dmg, hits, pow_cnt]
+            # New: vulnerable / weak stacks from power list
+            epowers     = e.get("powers", []) if alive else []
+            vuln_stacks = 0
+            weak_stacks = 0
+            for p in epowers:
+                pid = p.get("power_id", "").upper()
+                if "VULNERABLE" in pid:
+                    vuln_stacks = abs(p.get("amount") or 0)
+                elif "WEAK" in pid:
+                    weak_stacks = abs(p.get("amount") or 0)
+            vuln_norm  = min(vuln_stacks, 10) / 10.0
+            weak_norm  = min(weak_stacks, 10) / 10.0
+            # New: is_lethal flag
+            is_lethal  = 1.0 if (alive and max_lethal_dmg > 0 and max_lethal_dmg >= raw_hp) else 0.0
+            enemy_feats  += [ehp, emaxhp, eblk, alive, name_h, is_elite,
+                             is_atk, tot_dmg, hits, pow_cnt,
+                             vuln_norm, weak_norm, is_lethal]
             epower_feats += _power_feats(e.get("powers", []) if alive else [], max_powers=3)
         else:
-            enemy_feats  += [0.0] * 10
+            enemy_feats  += [0.0] * 13
             epower_feats += [0.0] * 6
 
     # ── Hand cards (60 = 10 × 6) ─────────────────────────────────────────────
-    hand       = cbt.get("hand", [])
     hand_feats = []
     for i in range(10):
         if i < len(hand):
@@ -156,18 +195,32 @@ def _encode_obs(state: dict) -> np.ndarray:
         else:
             hand_feats += [0.0] * 6
 
-    # ── Run context (4) ───────────────────────────────────────────────────────
+    # ── Run context (3) ───────────────────────────────────────────────────────
     floor_pct  = run.get("floor", 1) / 55.0
     alive_frac = alive_count / 5.0
     run_ctx    = [floor_pct, alive_frac, player_hp]
 
+    # ── Potions (9 = 3 × 3) ──────────────────────────────────────────────────
+    potions      = run.get("potions", [])
+    potion_feats = []
+    for i in range(3):
+        if i < len(potions):
+            pot      = potions[i]
+            occupied = 1.0 if pot.get("potion_id", "EMPTY") not in ("", "EMPTY", None) else 0.0
+            can_use  = 1.0 if pot.get("can_use", False) else 0.0
+            pot_hash = _card_id_to_float(pot.get("potion_id", "")) if occupied else 0.0
+            potion_feats += [occupied, can_use, pot_hash]
+        else:
+            potion_feats += [0.0, 0.0, 0.0]
+
     obs = np.array(
-        [player_hp, player_block, energy]
+        [player_hp, player_block, energy, stars, discard_ct, draw_ct, hand_size]
         + pp_feats
         + enemy_feats
         + epower_feats
         + hand_feats
-        + run_ctx,
+        + run_ctx
+        + potion_feats,
         dtype=np.float32
     )
     assert obs.shape[0] == OBS_SIZE, f"Obs mismatch: got {obs.shape[0]}, want {OBS_SIZE}"
@@ -193,12 +246,13 @@ class STSCombatEnv(gym.Env):
         )
         # MultiDiscrete: [card_action (0-10), target (0-2)]
         self.action_space = gym.spaces.MultiDiscrete([N_CARD_ACTIONS, N_TARGET_CHOICES])
-        self._prev_player_hp   = 80
-        self._prev_player_blk  = 0
-        self._prev_enemy_hp    = 0
-        self._prev_enemies     = []
-        self._enemy_attacking  = False  # for block efficiency reward
-        self._turn_start_energy = 0     # energy at start of turn (for waste penalty)
+        self._prev_player_hp    = 80
+        self._prev_player_blk   = 0
+        self._prev_enemy_hp     = 0
+        self._prev_enemies      = []
+        self._enemy_attacking   = False  # for block efficiency reward
+        self._turn_start_energy = 0      # energy at start of turn (for waste penalty)
+        self._start_floor       = 1      # floor at episode start (for floor bonus)
 
     # ── Navigation ────────────────────────────────────────────────────────────
 
@@ -315,24 +369,29 @@ class STSCombatEnv(gym.Env):
         state = self._skip_to_combat()
         run   = state.get("run")
         if not run:
-            self._prev_player_hp  = 80
-            self._prev_player_blk = 0
-            self._prev_enemy_hp   = 0
-            self._prev_enemies    = []
-            self._enemy_attacking = False
+            self._prev_player_hp   = 80
+            self._prev_player_blk  = 0
+            self._prev_enemy_hp    = 0
+            self._prev_enemies     = []
+            self._enemy_attacking  = False
+            self._start_floor      = 1
             return np.zeros(OBS_SIZE, dtype=np.float32), {}
         cbt     = state.get("combat") or {}
         enemies = cbt.get("enemies", [])
         player  = cbt.get("player") or {}
-        self._prev_player_hp   = run["current_hp"]
-        self._prev_player_blk  = player.get("block", 0)
-        self._prev_enemy_hp    = sum(e.get("current_hp", 0) for e in enemies if e.get("is_alive"))
-        self._prev_enemies     = enemies
+        self._prev_player_hp    = run["current_hp"]
+        self._prev_player_blk   = player.get("block", 0)
+        self._prev_enemy_hp     = sum(e.get("current_hp", 0) for e in enemies if e.get("is_alive"))
+        self._prev_enemies      = enemies
         self._turn_start_energy = player.get("energy", 0)
-        self._enemy_attacking  = any(
+        self._start_floor       = run.get("floor", 1)
+        self._enemy_attacking   = any(
             any(i.get("intent_type") == "Attack" for i in e.get("intents", []))
             for e in enemies if e.get("is_alive")
         )
+        # Track Neow relic pick (floor 1 start)
+        if self._start_floor == 1 and run.get("relics"):
+            _tracker.record_neow_relics(run["relics"])
         return _encode_obs(state), {}
 
     def step(self, action):
@@ -355,6 +414,8 @@ class STSCombatEnv(gym.Env):
                     _act("play_card", card_index=card_action, target_index=target)
                 else:
                     _act("play_card", card_index=card_action)
+                # Track card play for analytics
+                _tracker.record_card_play(card.get("card_id", "UNKNOWN"))
             else:
                 _act("end_turn")
         else:
@@ -400,6 +461,13 @@ class STSCombatEnv(gym.Env):
         player_lost   = max(0, self._prev_player_hp - new_player_hp)
         reward        = float(enemy_reduced - 2.0 * player_lost)
 
+        # Kill bonus: +max_hp/20 for each enemy killed this step
+        for i in range(len(self._prev_enemies)):
+            prev_e = self._prev_enemies[i]
+            if prev_e.get("current_hp", 0) > 0:      # was alive
+                if i < len(new_enemies) and new_enemies[i].get("current_hp", 0) <= 0:
+                    reward += prev_e.get("max_hp", 0) / 20.0
+
         # Energy waste penalty: -5 per unspent energy when turn ends
         # Detect turn end: action was end_turn OR new turn started (energy refilled)
         new_energy = new_player.get("energy", 0)
@@ -432,19 +500,65 @@ class STSCombatEnv(gym.Env):
         if new_state.get("game_over"):
             done    = True
             reward -= 20.0
+            # Floor progress bonus even on death
+            new_floor = (new_state.get("run") or {}).get("floor", self._start_floor)
+            reward   += (new_floor - self._start_floor) * 5
         elif not new_state.get("in_combat"):
             done = True
             was_elite = any(
                 e.get("enemy_id", "").upper() in _ELITE_IDS
                 for e in self._prev_enemies
             )
-            reward += 50.0 if was_elite else 10.0
+            reward += 50.0 if was_elite else 20.0
+            # Floor progress bonus on win
+            new_floor = run.get("floor", self._start_floor)
+            reward   += (new_floor - self._start_floor) * 5
 
         self._prev_enemies = new_enemies
         return _encode_obs(new_state), reward, done, False, {}
 
     def render(self):
         pass
+
+
+# ── Analytics tracker ─────────────────────────────────────────────────────────
+
+class STSTracker:
+    """Lightweight analytics tracker for STS2 training sessions."""
+
+    def __init__(self):
+        self.card_play_counts  = {}   # card_id  → count
+        self.neow_relic_counts = {}   # relic_id → count
+
+    def record_card_play(self, card_id: str):
+        """Increment play count for a card."""
+        self.card_play_counts[card_id] = self.card_play_counts.get(card_id, 0) + 1
+
+    def record_neow_relics(self, relics: list):
+        """Record relics present at floor 1 (Neow bonuses)."""
+        for relic in relics:
+            rid = relic.get("relic_id", "UNKNOWN")
+            self.neow_relic_counts[rid] = self.neow_relic_counts.get(rid, 0) + 1
+
+    def print_summary(self):
+        print("\n── Analytics ───────────────────────────────────────────")
+        print("  Top 5 most played cards:")
+        sorted_cards = sorted(self.card_play_counts.items(), key=lambda x: x[1], reverse=True)
+        for rank, (cid, cnt) in enumerate(sorted_cards[:5], 1):
+            print(f"    {rank}. {cid}: {cnt}")
+        if not sorted_cards:
+            print("    (none recorded)")
+        print("  Top 5 Neow relics chosen (floor 1):")
+        sorted_relics = sorted(self.neow_relic_counts.items(), key=lambda x: x[1], reverse=True)
+        for rank, (rid, cnt) in enumerate(sorted_relics[:5], 1):
+            print(f"    {rank}. {rid}: {cnt}")
+        if not sorted_relics:
+            print("    (none recorded)")
+        print("─" * 50)
+
+
+# Module-level tracker instance — shared by all env instances
+_tracker = STSTracker()
 
 
 # ── Training entry point ───────────────────────────────────────────────────────
@@ -578,3 +692,6 @@ if __name__ == "__main__":
         print(f"  History → {HISTORY_FILE}")
     else:
         print(f"\nNo completed episodes in {elapsed:.1f}s — increase total_timesteps")
+
+    # Print analytics
+    _tracker.print_summary()
