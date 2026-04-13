@@ -451,6 +451,9 @@ if __name__ == "__main__":
             super().__init__()
             self._prev_mean = None
 
+        def _on_step(self):
+            return True
+
         def _on_rollout_end(self):
             rews = self.model.env.envs[0].get_episode_rewards()
             if len(rews) < 2:
