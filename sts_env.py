@@ -515,7 +515,7 @@ if __name__ == "__main__":
         )
 
     print("Training PPO agent...")
-    TIMESTEPS = 25000
+    TIMESTEPS = 100
     t_start   = _time.time()
     model.learn(total_timesteps=TIMESTEPS, callback=RolloutCallback(), reset_num_timesteps=False)
     t_end   = _time.time()
