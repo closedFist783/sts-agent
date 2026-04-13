@@ -51,13 +51,28 @@ CARD_TYPES = {"Attack": 0, "Skill": 1, "Power": 2, "Status": 3, "Curse": 4}
 
 # ── API helpers ────────────────────────────────────────────────────────────────
 
+# Persistent session for connection reuse (avoids socket exhaustion)
+_session = requests.Session()
+adapter  = requests.adapters.HTTPAdapter(pool_connections=1, pool_maxsize=1)
+_session.mount("http://", adapter)
+
 def _get_state() -> dict:
-    return requests.get(f"{API}/state").json()["data"]
+    for attempt in range(5):
+        try:
+            return _session.get(f"{API}/state", timeout=10).json()["data"]
+        except Exception:
+            time.sleep(0.5 * (attempt + 1))
+    return {}  # return empty state on total failure
 
 def _act(action: str, **params) -> dict:
     clean = {k: int(v) if hasattr(v, "item") else v for k, v in params.items()}
-    r = requests.post(f"{API}/action", json={"action": action, **clean})
-    return r.json()
+    for attempt in range(5):
+        try:
+            r = _session.post(f"{API}/action", json={"action": action, **clean}, timeout=10)
+            return r.json()
+        except Exception:
+            time.sleep(0.5 * (attempt + 1))
+    return {"ok": False}
 
 # ── Observation encoding ───────────────────────────────────────────────────────
 
@@ -232,11 +247,21 @@ class STSCombatEnv(gym.Env):
                     _act("proceed")
                 else:
                     prompt = sel.get("prompt", "").lower()
-                    is_remove   = "remove" in kind or "remove" in prompt
+                    is_remove    = "remove"    in kind or "remove"    in prompt
                     is_transform = "transform" in kind or "transform" in prompt
-                    is_upgrade   = "upgrade" in kind or "upgrade" in prompt
+                    is_upgrade   = "upgrade"   in kind or "upgrade"   in prompt
+                    is_exhaust   = "exhaust"   in kind or "exhaust"   in prompt
 
-                    if is_remove:
+                    if is_exhaust:
+                        # Exhaust selection — skip (proceed) since it's usually optional
+                        # If required, pick worst cards (status/curse first)
+                        if min_s == 0:
+                            _act("proceed")
+                        else:
+                            for c in cards[:min_s if min_s > 0 else 1]:
+                                _act("select_deck_card", option_index=c["index"])
+                                time.sleep(0.1)
+                    elif is_remove:
                         target = (
                             next((c for c in cards if "STRIKE" in c.get("card_id", "").upper()), None)
                             or next((c for c in cards if "DEFEND" in c.get("card_id", "").upper()), None)
