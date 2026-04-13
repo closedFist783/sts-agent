@@ -24,12 +24,12 @@ API = "http://127.0.0.1:8080"
 # Observation layout (161 total):
 #   3   player base       hp, block, energy
 #  20   player powers     10 powers × (id_hash, amount)
-#  45   enemies           5 × 9 (hp, block, alive, name_hash, is_elite,
+#  50   enemies           5 × 10 (hp, max_hp, block, alive, name_hash, is_elite,
 #                                 intent_atk, intent_dmg, intent_hits, power_count)
 #  30   enemy powers      5 enemies × 3 powers × (id_hash, amount)
 #  60   hand cards        10 × 6 (card_hash, cost, type, upgraded, playable, primary_val)
 #   3   run context       floor_pct, alive_enemies, hp_pct
-OBS_SIZE = 161
+OBS_SIZE = 166
 
 # Action space: MultiDiscrete([11, 5])
 #   action[0]: 0-9 = play card at hand index, 10 = end turn
@@ -103,7 +103,9 @@ def _encode_obs(state: dict) -> np.ndarray:
         if i < len(enemies):
             e        = enemies[i]
             alive    = 1.0 if e.get("is_alive") else 0.0
-            ehp      = (e.get("current_hp", 0) / max(e.get("max_hp", 1), 1)) * alive
+            raw_max  = max(e.get("max_hp", 1), 1)
+            ehp      = (e.get("current_hp", 0) / raw_max) * alive
+            emaxhp   = min(raw_max, 500) / 500.0
             eblk     = e.get("block", 0) / 50.0 * alive
             name_h   = _card_id_to_float(e.get("enemy_id", ""))
             is_elite = 1.0 if e.get("enemy_id", "").upper() in _ELITE_IDS else 0.0
@@ -113,10 +115,10 @@ def _encode_obs(state: dict) -> np.ndarray:
             tot_dmg  = min(sum(x.get("total_damage") or 0 for x in atk_ints), 99) / 99.0
             hits     = min(sum(x.get("hits") or 0 for x in atk_ints), 9) / 9.0
             pow_cnt  = min(len(e.get("powers", [])), 10) / 10.0
-            enemy_feats  += [ehp, eblk, alive, name_h, is_elite, is_atk, tot_dmg, hits, pow_cnt]
+            enemy_feats  += [ehp, emaxhp, eblk, alive, name_h, is_elite, is_atk, tot_dmg, hits, pow_cnt]
             epower_feats += _power_feats(e.get("powers", []) if alive else [], max_powers=3)
         else:
-            enemy_feats  += [0.0] * 9
+            enemy_feats  += [0.0] * 10
             epower_feats += [0.0] * 6
 
     # ── Hand cards (60 = 10 × 6) ─────────────────────────────────────────────
