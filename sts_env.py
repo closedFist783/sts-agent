@@ -202,7 +202,16 @@ class STSCombatEnv(gym.Env):
                         or cards[0]
                     )
                     _act("select_deck_card", card_index=target["index"])
-                else:  # choose_card_select, upgrade, etc.
+                elif "upgrade" in kind:  # deck_upgrade_select
+                    # Upgrade Bash > Strike > Defend > first card
+                    target = (
+                        next((c for c in cards if "BASH" in c.get("card_id", "").upper()), None)
+                        or next((c for c in cards if "STRIKE" in c.get("card_id", "").upper()), None)
+                        or next((c for c in cards if "DEFEND" in c.get("card_id", "").upper()), None)
+                        or cards[0]
+                    )
+                    _act("select_deck_card", card_index=target["index"])
+                else:  # choose_card_select, unknown kinds
                     _act("select_deck_card", card_index=cards[0]["index"])
 
                 # Confirm the selection if needed
