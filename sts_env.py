@@ -447,8 +447,12 @@ if __name__ == "__main__":
         gamma=0.99,
     )
 
-    TIMESTEPS = 256
+    import time as _time
+    TIMESTEPS = 2000
+    t_start   = _time.time()
     model.learn(total_timesteps=TIMESTEPS)
+    t_end   = _time.time()
+    elapsed = t_end - t_start
     model.save("sts_ppo_model")
     print("\nModel saved → sts_ppo_model.zip")
 
@@ -456,6 +460,7 @@ if __name__ == "__main__":
     monitor    = model.env.envs[0]
     ep_rewards = monitor.get_episode_rewards()
     ep_lengths = monitor.get_episode_lengths()
+    secs_per_step = elapsed / TIMESTEPS if TIMESTEPS else 0
 
     if ep_rewards:
         wins = [r for r in ep_rewards if r > 0]
@@ -463,6 +468,9 @@ if __name__ == "__main__":
         print("  TRAINING SUMMARY")
         print("=" * 44)
         print(f"  Timesteps          {TIMESTEPS:>8}")
+        print(f"  Total time         {elapsed:>7.1f}s  ({elapsed/60:.1f} min)")
+        print(f"  Time per step      {secs_per_step:>8.3f}s")
+        print(f"  Steps per second   {1/secs_per_step:>8.1f}")
         print(f"  Episodes           {len(ep_rewards):>8}")
         print(f"  Avg reward         {np.mean(ep_rewards):>8.1f}")
         print(f"  Best episode       {max(ep_rewards):>8.1f}")
