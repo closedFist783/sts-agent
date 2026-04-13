@@ -178,8 +178,14 @@ class STSCombatEnv(gym.Env):
                 if opts:
                     _act("choose_reward_card", card_index=opts[0]["index"])
             elif "select_deck_card" in actions:
-                cards = (state.get("selection") or {}).get("cards", [])
-                if cards:
+                sel   = state.get("selection") or {}
+                cards = sel.get("cards", [])
+                min_s = sel.get("min_select", 1)
+                kind  = sel.get("kind", "")
+                if min_s == 0:
+                    # Optional selection (e.g. Neow card offer) — skip it
+                    _act("proceed")
+                elif cards:
                     _act("select_deck_card", card_index=cards[0]["index"])
             elif "proceed" in actions:
                 _act("proceed")
