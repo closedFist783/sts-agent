@@ -153,8 +153,18 @@ class STSCombatEnv(gym.Env):
                 _act("return_to_main_menu")
                 time.sleep(0.5)
             elif screen == "MAIN_MENU":
-                _act("open_character_select")
-                time.sleep(0.5)
+                actions_on_menu = state.get("available_actions", [])
+                if "abandon_run" in actions_on_menu:
+                    # Abandon any in-progress run so we always start fresh
+                    _act("abandon_run")
+                    time.sleep(0.5)
+                elif "continue_run" in actions_on_menu:
+                    # Continue would resume mid-run — abandon it instead
+                    _act("abandon_run")
+                    time.sleep(0.5)
+                else:
+                    _act("open_character_select")
+                    time.sleep(0.5)
             elif "embark" in actions:
                 _act("embark")
             elif "choose_event_option" in actions:
