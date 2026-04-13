@@ -253,14 +253,9 @@ class STSCombatEnv(gym.Env):
                     is_exhaust   = "exhaust"   in kind or "exhaust"   in prompt
 
                     if is_exhaust:
-                        # Exhaust selection — skip (proceed) since it's usually optional
-                        # If required, pick worst cards (status/curse first)
-                        if min_s == 0:
-                            _act("proceed")
-                        else:
-                            for c in cards[:min_s if min_s > 0 else 1]:
-                                _act("select_deck_card", option_index=c["index"])
-                                time.sleep(0.1)
+                        # Exhaust from hand (combat_hand_select) — confirm with 0 selected if optional
+                        # Also handle confirm_selection action directly
+                        _act("confirm_selection")
                     elif is_remove:
                         target = (
                             next((c for c in cards if "STRIKE" in c.get("card_id", "").upper()), None)
@@ -300,6 +295,9 @@ class STSCombatEnv(gym.Env):
                     _act("choose_map_node", option_index=n["index"])
             elif "choose_rest_option" in actions:
                 _act("choose_rest_option", option_id="rest")
+            elif "confirm_selection" in actions and "select_deck_card" in actions:
+                # Card selection with optional confirm — confirm with whatever is selected
+                _act("confirm_selection")
             elif "confirm_modal" in actions:
                 _act("confirm_modal")
             elif "dismiss_modal" in actions:
