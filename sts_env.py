@@ -182,23 +182,35 @@ class STSCombatEnv(gym.Env):
                 cards = sel.get("cards", [])
                 min_s = sel.get("min_select", 1)
                 kind  = sel.get("kind", "")
-                if min_s == 0 and not cards:
+
+                if not cards or min_s == 0:
+                    # Optional or empty — skip
                     _act("proceed")
-                elif cards:
-                    # For removal (deck_card_select), remove a Strike if possible, else first card
-                    if "deck_card_select" in kind or "remove" in kind.lower():
-                        target = next((c for c in cards if "STRIKE" in c.get("card_id", "").upper()), cards[0])
-                    else:
-                        target = cards[0]
-                    result = _act("select_deck_card", card_index=target["index"])
-                    time.sleep(0.2)
-                    # Confirm if needed
-                    post = _get_state()
-                    post_actions = post.get("available_actions", [])
-                    if "confirm_selection" in post_actions:
-                        _act("confirm_selection")
-                    elif post.get("selection", {}) and (post.get("selection") or {}).get("can_confirm"):
-                        _act("confirm_selection")
+                elif "remove" in kind:  # deck_remove_select
+                    # Remove a Strike first, else Defend, else first card
+                    target = (
+                        next((c for c in cards if "STRIKE" in c.get("card_id", "").upper()), None)
+                        or next((c for c in cards if "DEFEND" in c.get("card_id", "").upper()), None)
+                        or cards[0]
+                    )
+                    _act("select_deck_card", card_index=target["index"])
+                elif "transform" in kind:  # deck_transform_select
+                    # Transform a Strike or Defend (usually worth it)
+                    target = (
+                        next((c for c in cards if "STRIKE" in c.get("card_id", "").upper()), None)
+                        or next((c for c in cards if "DEFEND" in c.get("card_id", "").upper()), None)
+                        or cards[0]
+                    )
+                    _act("select_deck_card", card_index=target["index"])
+                else:  # choose_card_select, upgrade, etc.
+                    _act("select_deck_card", card_index=cards[0]["index"])
+
+                # Confirm the selection if needed
+                time.sleep(0.2)
+                post = _get_state()
+                post_actions = post.get("available_actions", [])
+                if "confirm_selection" in post_actions:
+                    _act("confirm_selection")
             elif "proceed" in actions:
                 _act("proceed")
             elif "choose_map_node" in actions:
