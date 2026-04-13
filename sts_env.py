@@ -22,7 +22,7 @@ import requests
 API = "http://127.0.0.1:8080"
 
 # Observation layout (194 total):
-#   7   player base       hp, block, energy, stars, discard_ct, draw_ct, hand_size
+#   6   player base       hp, block, energy, discard_ct, draw_ct, hand_size
 #  20   player powers     10 powers × (id_hash, amount)
 #  65   enemies           5 × 13 (hp, max_hp, block, alive, name_hash, is_elite,
 #                                  intent_atk, intent_dmg, intent_hits, power_count,
@@ -31,7 +31,7 @@ API = "http://127.0.0.1:8080"
 #  60   hand cards        10 × 6 (card_hash, cost, type, upgraded, playable, primary_val)
 #   3   run context       floor_pct, alive_enemies, hp_pct
 #   9   potions           3 slots × (occupied, can_use, potion_id_hash)
-OBS_SIZE = 194
+OBS_SIZE = 193
 
 # Action space: MultiDiscrete([11, 5])
 #   action[0]: 0-9 = play card at hand index, 10 = end turn
@@ -107,7 +107,6 @@ def _encode_obs(state: dict) -> np.ndarray:
     player_hp    = run.get("current_hp", 80) / max_hp
     player_block = player.get("block", 0) / 50.0
     energy       = player.get("energy", 0) / max_energy
-    stars        = min(player.get("stars", 0), 99) / 10.0
     discard_ct   = len(cbt.get("discard", [])) / 20.0
     draw_ct      = len(cbt.get("draw", [])) / 20.0
     hand_size    = len(hand) / 10.0
@@ -214,7 +213,7 @@ def _encode_obs(state: dict) -> np.ndarray:
             potion_feats += [0.0, 0.0, 0.0]
 
     obs = np.array(
-        [player_hp, player_block, energy, stars, discard_ct, draw_ct, hand_size]
+        [player_hp, player_block, energy, discard_ct, draw_ct, hand_size]
         + pp_feats
         + enemy_feats
         + epower_feats
