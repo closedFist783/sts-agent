@@ -219,30 +219,34 @@ class STSCombatEnv(gym.Env):
 
                 if not cards:
                     _act("proceed")
-                elif "remove" in kind:
-                    target = (
-                        next((c for c in cards if "STRIKE" in c.get("card_id", "").upper()), None)
-                        or next((c for c in cards if "DEFEND" in c.get("card_id", "").upper()), None)
-                        or cards[0]
-                    )
-                    _act("select_deck_card", card_index=target["index"])
-                elif "transform" in kind:
-                    target = (
-                        next((c for c in cards if "STRIKE" in c.get("card_id", "").upper()), None)
-                        or next((c for c in cards if "DEFEND" in c.get("card_id", "").upper()), None)
-                        or cards[0]
-                    )
-                    _act("select_deck_card", card_index=target["index"])
-                elif "upgrade" in kind:
-                    target = (
-                        next((c for c in cards if "BASH" in c.get("card_id", "").upper()), None)
-                        or next((c for c in cards if "STRIKE" in c.get("card_id", "").upper()), None)
-                        or next((c for c in cards if "DEFEND" in c.get("card_id", "").upper()), None)
-                        or cards[0]
-                    )
-                    _act("select_deck_card", card_index=target["index"])
                 else:
-                    _act("select_deck_card", card_index=cards[0]["index"])
+                    prompt = sel.get("prompt", "").lower()
+                    is_remove   = "remove" in kind or "remove" in prompt
+                    is_transform = "transform" in kind or "transform" in prompt
+                    is_upgrade   = "upgrade" in kind or "upgrade" in prompt
+
+                    if is_remove:
+                        target = (
+                            next((c for c in cards if "STRIKE" in c.get("card_id", "").upper()), None)
+                            or next((c for c in cards if "DEFEND" in c.get("card_id", "").upper()), None)
+                            or cards[0]
+                        )
+                    elif is_transform:
+                        target = (
+                            next((c for c in cards if "STRIKE" in c.get("card_id", "").upper()), None)
+                            or next((c for c in cards if "DEFEND" in c.get("card_id", "").upper()), None)
+                            or cards[0]
+                        )
+                    elif is_upgrade:
+                        target = (
+                            next((c for c in cards if "BASH" in c.get("card_id", "").upper()), None)
+                            or next((c for c in cards if "STRIKE" in c.get("card_id", "").upper()), None)
+                            or next((c for c in cards if "DEFEND" in c.get("card_id", "").upper()), None)
+                            or cards[0]
+                        )
+                    else:
+                        target = cards[0]
+                    _act("select_deck_card", card_index=target["index"])
 
                 # Confirm if needed
                 time.sleep(0.2)
