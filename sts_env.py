@@ -335,7 +335,7 @@ class STSCombatEnv(gym.Env):
         else:
             _act("end_turn")
 
-        time.sleep(0.1)
+        time.sleep(0.02)
 
         # Handle mid-combat interrupts
         for _ in range(20):
