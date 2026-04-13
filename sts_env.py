@@ -217,7 +217,7 @@ class STSCombatEnv(gym.Env):
                 min_s = sel.get("min_select", 1)
                 kind  = sel.get("kind", "")
 
-                if not cards or min_s == 0:
+                if not cards:
                     _act("proceed")
                 elif "remove" in kind:
                     target = (
