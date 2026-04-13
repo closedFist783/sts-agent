@@ -388,8 +388,8 @@ class STSCombatEnv(gym.Env):
             any(i.get("intent_type") == "Attack" for i in e.get("intents", []))
             for e in enemies if e.get("is_alive")
         )
-        # Track Neow relic pick (floor 1 start)
-        if self._start_floor == 1 and run.get("relics"):
+        # Track starting relics (captures Neow choice at beginning of each run)
+        if run.get("relics"):
             _tracker.record_neow_relics(run["relics"])
         return _encode_obs(state), {}
 
