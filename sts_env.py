@@ -440,11 +440,15 @@ class STSCombatEnv(gym.Env):
 
         time.sleep(0.02)
 
-        # Handle mid-combat interrupts
+        # Handle mid-combat interrupts (card selections, modals that pause combat)
         for _ in range(20):
             mid         = _get_state()
             mid_actions = mid.get("available_actions", [])
-            if mid.get("in_combat") or mid.get("game_over") or not mid_actions:
+            mid_screen  = mid.get("screen", "")
+            # Break if we're back in active combat (can play cards/end turn) or done
+            if mid.get("game_over") or not mid_actions:
+                break
+            if mid_screen == "COMBAT" and any(a in mid_actions for a in ("play_card", "end_turn")):
                 break
             if "select_deck_card" in mid_actions:
                 sel   = mid.get("selection") or {}
