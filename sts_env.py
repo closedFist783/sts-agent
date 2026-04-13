@@ -18,9 +18,18 @@ import gymnasium as gym
 import numpy as np
 import requests
 
-# ── Config ────────────────────────────────────────────────────────────────────
-API      = "http://127.0.0.1:8080"
-OBS_SIZE = 75   # 3 player + 12 enemy (3×4) + 60 hand (10×6)
+# ── Config ─────────────────────────────────────────────────────────────────────
+API = "http://127.0.0.1:8080"
+
+# Observation layout (132 total):
+#   3   player base       hp, block, energy
+#  20   player powers     10 powers × (id_hash, amount)
+#  27   enemies           3 × 9 (hp, block, alive, name_hash, is_elite,
+#                                 intent_atk, intent_dmg, intent_hits, power_count)
+#  18   enemy powers      3 enemies × 3 powers × (id_hash, amount)
+#  60   hand cards        10 × 6 (card_hash, cost, type, upgraded, playable, primary_val)
+#   4   run context       floor_pct, alive_enemies, energy_pct, hp_pct
+OBS_SIZE = 132
 
 # Known elite enemy IDs — beating one gives +50 bonus reward
 _ELITE_IDS = {
@@ -33,58 +42,79 @@ _ELITE_IDS = {
 
 CARD_TYPES = {"Attack": 0, "Skill": 1, "Power": 2, "Status": 3, "Curse": 4}
 
-# ── API helpers ───────────────────────────────────────────────────────────────
+# ── API helpers ────────────────────────────────────────────────────────────────
 
 def _get_state() -> dict:
     return requests.get(f"{API}/state").json()["data"]
 
 def _act(action: str, **params) -> dict:
-    """Send an action. Converts numpy int types to Python int for JSON."""
     clean = {k: int(v) if hasattr(v, "item") else v for k, v in params.items()}
     r = requests.post(f"{API}/action", json={"action": action, **clean})
     return r.json()
 
-# ── Observation encoding ──────────────────────────────────────────────────────
+# ── Observation encoding ───────────────────────────────────────────────────────
 
 def _card_id_to_float(card_id: str) -> float:
-    """Stable float encoding of a card ID via MD5 hash. Range 0.0–1.0."""
     h = int(hashlib.md5(card_id.encode()).hexdigest(), 16)
     return (h % 10000) / 10000.0
+
+def _power_feats(powers: list, max_powers: int) -> list:
+    feats = []
+    for i in range(max_powers):
+        if i < len(powers):
+            p = powers[i]
+            pid    = _card_id_to_float(p.get("power_id", ""))
+            amount = min(abs(p.get("amount") or 0), 99) / 99.0
+            feats += [pid, amount]
+        else:
+            feats += [0.0, 0.0]
+    return feats
 
 def _encode_obs(state: dict) -> np.ndarray:
     run    = state.get("run")    or {}
     cbt    = state.get("combat") or {}
     player = cbt.get("player")   or {}
 
-    max_hp     = run.get("max_hp", 80)     or 80
-    max_energy = run.get("max_energy", 3)  or 3
+    max_hp     = run.get("max_hp", 80)    or 80
+    max_energy = run.get("max_energy", 3) or 3
 
-    # ── Player (3 features) ───────────────────────────────────────────────────
+    # ── Player base (3) ──────────────────────────────────────────────────────
     player_hp    = run.get("current_hp", 80) / max_hp
     player_block = player.get("block", 0) / 50.0
     energy       = player.get("energy", 0) / max_energy
 
-    # ── Enemies — up to 3 (12 features = 3 × 4) ──────────────────────────────
-    enemies = cbt.get("enemies", [])
-    enemy_feats: list[float] = []
+    # ── Player powers (20 = 10 × 2) ──────────────────────────────────────────
+    pp_feats = _power_feats(player.get("powers", []), max_powers=10)
+
+    # ── Enemies (27 = 3 × 9) + enemy powers (18 = 3 × 3 × 2) ────────────────
+    enemies      = cbt.get("enemies", [])
+    alive_count  = sum(1 for e in enemies if e.get("is_alive"))
+    enemy_feats  = []
+    epower_feats = []
+
     for i in range(3):
         if i < len(enemies):
-            e = enemies[i]
-            if e.get("is_alive"):
-                ehp     = e.get("current_hp", 0) / max(e.get("max_hp", 1), 1)
-                eblk    = e.get("block", 0) / 50.0
-                intents = e.get("intents", [])
-                is_atk  = 1.0 if any(x.get("intent_type") == "Attack" for x in intents) else 0.0
-                total_dmg = sum(x.get("total_damage") or 0 for x in intents) / 50.0
-                enemy_feats += [ehp, eblk, is_atk, total_dmg]
-            else:
-                enemy_feats += [0.0, 0.0, 0.0, 0.0]
+            e        = enemies[i]
+            alive    = 1.0 if e.get("is_alive") else 0.0
+            ehp      = (e.get("current_hp", 0) / max(e.get("max_hp", 1), 1)) * alive
+            eblk     = e.get("block", 0) / 50.0 * alive
+            name_h   = _card_id_to_float(e.get("enemy_id", ""))
+            is_elite = 1.0 if e.get("enemy_id", "").upper() in _ELITE_IDS else 0.0
+            intents  = e.get("intents", []) if alive else []
+            atk_ints = [x for x in intents if x.get("intent_type") == "Attack"]
+            is_atk   = 1.0 if atk_ints else 0.0
+            tot_dmg  = min(sum(x.get("total_damage") or 0 for x in atk_ints), 99) / 99.0
+            hits     = min(sum(x.get("hits") or 0 for x in atk_ints), 9) / 9.0
+            pow_cnt  = min(len(e.get("powers", [])), 10) / 10.0
+            enemy_feats  += [ehp, eblk, alive, name_h, is_elite, is_atk, tot_dmg, hits, pow_cnt]
+            epower_feats += _power_feats(e.get("powers", []) if alive else [], max_powers=3)
         else:
-            enemy_feats += [0.0, 0.0, 0.0, 0.0]
+            enemy_feats  += [0.0] * 9
+            epower_feats += [0.0] * 6
 
-    # ── Hand — up to 10 cards (60 features = 10 × 6) ─────────────────────────
-    hand = cbt.get("hand", [])
-    hand_feats: list[float] = []
+    # ── Hand cards (60 = 10 × 6) ─────────────────────────────────────────────
+    hand       = cbt.get("hand", [])
+    hand_feats = []
     for i in range(10):
         if i < len(hand):
             card     = hand[i]
@@ -93,33 +123,42 @@ def _encode_obs(state: dict) -> np.ndarray:
             ctype    = CARD_TYPES.get(card.get("card_type", ""), 0) / 4.0
             upgraded = 1.0 if card.get("upgraded") else 0.0
             playable = 1.0 if card.get("playable") else 0.0
-            # Primary damage or block value
             primary  = 0.0
             for dv in card.get("dynamic_values", []):
                 if dv.get("name") in ("Damage", "Block"):
-                    primary = dv.get("current_value", 0) / 50.0
+                    primary = min(dv.get("current_value", 0), 99) / 99.0
                     break
             hand_feats += [cid, cost, ctype, upgraded, playable, primary]
         else:
-            hand_feats += [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            hand_feats += [0.0] * 6
 
-    obs = np.array([player_hp, player_block, energy] + enemy_feats + hand_feats,
-                   dtype=np.float32)
-    assert obs.shape == (OBS_SIZE,), f"Obs size mismatch: {obs.shape}"
+    # ── Run context (4) ───────────────────────────────────────────────────────
+    floor_pct  = run.get("floor", 1) / 55.0
+    alive_frac = alive_count / 3.0
+    run_ctx    = [floor_pct, alive_frac, energy, player_hp]
+
+    obs = np.array(
+        [player_hp, player_block, energy]
+        + pp_feats
+        + enemy_feats
+        + epower_feats
+        + hand_feats
+        + run_ctx,
+        dtype=np.float32
+    )
+    assert obs.shape[0] == OBS_SIZE, f"Obs mismatch: got {obs.shape[0]}, want {OBS_SIZE}"
     return obs
 
-# ── Environment ───────────────────────────────────────────────────────────────
+# ── Environment ────────────────────────────────────────────────────────────────
 
 class STSCombatEnv(gym.Env):
     """
     STS2 combat-only RL environment.
 
-    Observation: 75-dim vector (player stats, enemy stats × 3, hand cards × 10)
-    Actions:     Discrete(11) — play card 0–9 or end turn (10)
-    Reward:      enemy_hp_reduced - 2 * player_hp_lost
-                 +10 for winning normal combat
-                 +50 for winning elite combat
-                 -20 for dying
+    Obs:    132-dim vector (player stats+powers, 3 enemies with powers, 10 hand cards, run context)
+    Actions: Discrete(11) — play card 0-9 or end turn (10)
+    Reward:  enemy_hp_reduced - 2*player_hp_lost + block_efficiency
+             +10 win, +50 elite win, -20 death
     """
     metadata = {"render_modes": []}
 
@@ -128,15 +167,16 @@ class STSCombatEnv(gym.Env):
         self.observation_space = gym.spaces.Box(
             low=0.0, high=1.0, shape=(OBS_SIZE,), dtype=np.float32
         )
-        self.action_space = gym.spaces.Discrete(11)
-        self._prev_player_hp  = 80
-        self._prev_enemy_hp   = 0
-        self._prev_enemies    = []  # for elite detection on done
+        self.action_space      = gym.spaces.Discrete(11)
+        self._prev_player_hp   = 80
+        self._prev_player_blk  = 0
+        self._prev_enemy_hp    = 0
+        self._prev_enemies     = []
+        self._enemy_attacking  = False  # for block efficiency reward
 
-    # ── Navigation ───────────────────────────────────────────────────────────
+    # ── Navigation ────────────────────────────────────────────────────────────
 
     def _skip_to_combat(self, max_steps: int = 400) -> dict:
-        """Auto-navigate all non-combat screens until combat starts."""
         for _ in range(max_steps):
             state = _get_state()
             if state.get("in_combat") and state.get("available_actions"):
@@ -153,18 +193,12 @@ class STSCombatEnv(gym.Env):
                 _act("return_to_main_menu")
                 time.sleep(0.5)
             elif screen == "MAIN_MENU":
-                actions_on_menu = state.get("available_actions", [])
-                if "abandon_run" in actions_on_menu:
-                    # Abandon any in-progress run so we always start fresh
+                menu_actions = state.get("available_actions", [])
+                if "abandon_run" in menu_actions or "continue_run" in menu_actions:
                     _act("abandon_run")
-                    time.sleep(0.5)
-                elif "continue_run" in actions_on_menu:
-                    # Continue would resume mid-run — abandon it instead
-                    _act("abandon_run")
-                    time.sleep(0.5)
                 else:
                     _act("open_character_select")
-                    time.sleep(0.5)
+                time.sleep(0.5)
             elif "embark" in actions:
                 _act("embark")
             elif "choose_event_option" in actions:
@@ -184,26 +218,22 @@ class STSCombatEnv(gym.Env):
                 kind  = sel.get("kind", "")
 
                 if not cards or min_s == 0:
-                    # Optional or empty — skip
                     _act("proceed")
-                elif "remove" in kind:  # deck_remove_select
-                    # Remove a Strike first, else Defend, else first card
+                elif "remove" in kind:
                     target = (
                         next((c for c in cards if "STRIKE" in c.get("card_id", "").upper()), None)
                         or next((c for c in cards if "DEFEND" in c.get("card_id", "").upper()), None)
                         or cards[0]
                     )
                     _act("select_deck_card", card_index=target["index"])
-                elif "transform" in kind:  # deck_transform_select
-                    # Transform a Strike or Defend (usually worth it)
+                elif "transform" in kind:
                     target = (
                         next((c for c in cards if "STRIKE" in c.get("card_id", "").upper()), None)
                         or next((c for c in cards if "DEFEND" in c.get("card_id", "").upper()), None)
                         or cards[0]
                     )
                     _act("select_deck_card", card_index=target["index"])
-                elif "upgrade" in kind:  # deck_upgrade_select
-                    # Upgrade Bash > Strike > Defend > first card
+                elif "upgrade" in kind:
                     target = (
                         next((c for c in cards if "BASH" in c.get("card_id", "").upper()), None)
                         or next((c for c in cards if "STRIKE" in c.get("card_id", "").upper()), None)
@@ -211,15 +241,15 @@ class STSCombatEnv(gym.Env):
                         or cards[0]
                     )
                     _act("select_deck_card", card_index=target["index"])
-                else:  # choose_card_select, unknown kinds
+                else:
                     _act("select_deck_card", card_index=cards[0]["index"])
 
-                # Confirm the selection if needed
+                # Confirm if needed
                 time.sleep(0.2)
                 post = _get_state()
-                post_actions = post.get("available_actions", [])
-                if "confirm_selection" in post_actions:
+                if "confirm_selection" in (post.get("available_actions") or []):
                     _act("confirm_selection")
+
             elif "proceed" in actions:
                 _act("proceed")
             elif "choose_map_node" in actions:
@@ -240,22 +270,30 @@ class STSCombatEnv(gym.Env):
             time.sleep(0.1)
         return _get_state()
 
-    # ── Gym interface ─────────────────────────────────────────────────────────
+    # ── Gym interface ──────────────────────────────────────────────────────────
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         state = self._skip_to_combat()
         run   = state.get("run")
         if not run:
-            self._prev_player_hp = 80
-            self._prev_enemy_hp  = 0
-            self._prev_enemies   = []
+            self._prev_player_hp  = 80
+            self._prev_player_blk = 0
+            self._prev_enemy_hp   = 0
+            self._prev_enemies    = []
+            self._enemy_attacking = False
             return np.zeros(OBS_SIZE, dtype=np.float32), {}
         cbt     = state.get("combat") or {}
         enemies = cbt.get("enemies", [])
-        self._prev_player_hp = run["current_hp"]
-        self._prev_enemy_hp  = sum(e.get("current_hp", 0) for e in enemies if e.get("is_alive"))
-        self._prev_enemies   = enemies
+        player  = cbt.get("player") or {}
+        self._prev_player_hp  = run["current_hp"]
+        self._prev_player_blk = player.get("block", 0)
+        self._prev_enemy_hp   = sum(e.get("current_hp", 0) for e in enemies if e.get("is_alive"))
+        self._prev_enemies    = enemies
+        self._enemy_attacking = any(
+            any(i.get("intent_type") == "Attack" for i in e.get("intents", []))
+            for e in enemies if e.get("is_alive")
+        )
         return _encode_obs(state), {}
 
     def step(self, action: int):
@@ -278,14 +316,15 @@ class STSCombatEnv(gym.Env):
             _act("end_turn")
 
         time.sleep(0.1)
-        # Handle mid-combat interrupts (card selections, modals, etc.)
+
+        # Handle mid-combat interrupts
         for _ in range(20):
-            mid = _get_state()
+            mid         = _get_state()
             mid_actions = mid.get("available_actions", [])
-            if mid.get("in_combat") or mid.get("game_over") or not mid.get("in_combat") and not mid_actions:
+            if mid.get("in_combat") or mid.get("game_over") or not mid_actions:
                 break
             if "select_deck_card" in mid_actions:
-                sel = mid.get("selection") or {}
+                sel   = mid.get("selection") or {}
                 cards = sel.get("cards", [])
                 if cards:
                     _act("select_deck_card", card_index=cards[0]["index"])
@@ -300,20 +339,36 @@ class STSCombatEnv(gym.Env):
             else:
                 break
             time.sleep(0.1)
+
         new_state   = _get_state()
         new_cbt     = new_state.get("combat") or {}
         new_enemies = new_cbt.get("enemies", [])
+        new_player  = new_cbt.get("player") or {}
         run         = new_state.get("run") or {}
 
-        new_player_hp = run.get("current_hp", self._prev_player_hp)
-        new_enemy_hp  = sum(e.get("current_hp", 0) for e in new_enemies if e.get("is_alive"))
+        new_player_hp  = run.get("current_hp", self._prev_player_hp)
+        new_player_blk = new_player.get("block", 0)
+        new_enemy_hp   = sum(e.get("current_hp", 0) for e in new_enemies if e.get("is_alive"))
 
+        # Base reward
         enemy_reduced = max(0, self._prev_enemy_hp - new_enemy_hp)
         player_lost   = max(0, self._prev_player_hp - new_player_hp)
-        reward = float(enemy_reduced - 2.0 * player_lost)
+        reward        = float(enemy_reduced - 2.0 * player_lost)
 
-        self._prev_player_hp = new_player_hp
-        self._prev_enemy_hp  = new_enemy_hp
+        # Block efficiency bonus: reward gaining block when enemy was going to attack
+        if self._enemy_attacking:
+            block_gained = max(0, new_player_blk - self._prev_player_blk)
+            reward += block_gained * 0.3  # small bonus for smart blocking
+
+        self._prev_player_hp  = new_player_hp
+        self._prev_player_blk = new_player_blk
+        self._prev_enemy_hp   = new_enemy_hp
+
+        # Track if enemy is attacking next turn for block efficiency
+        self._enemy_attacking = any(
+            any(i.get("intent_type") == "Attack" for i in e.get("intents", []))
+            for e in new_enemies if e.get("is_alive")
+        )
 
         done = False
         if new_state.get("game_over"):
@@ -321,7 +376,6 @@ class STSCombatEnv(gym.Env):
             reward -= 20.0
         elif not new_state.get("in_combat"):
             done = True
-            # Elite bonus: check enemy IDs from previous combat state
             was_elite = any(
                 e.get("enemy_id", "").upper() in _ELITE_IDS
                 for e in self._prev_enemies
@@ -335,7 +389,7 @@ class STSCombatEnv(gym.Env):
         pass
 
 
-# ── Training entry point ──────────────────────────────────────────────────────
+# ── Training entry point ───────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     from stable_baselines3 import PPO
@@ -365,13 +419,13 @@ if __name__ == "__main__":
     model.save("sts_ppo_model")
     print("\nModel saved → sts_ppo_model.zip")
 
-    # ── Post-training summary ─────────────────────────────────────────────
+    # ── Post-training summary ─────────────────────────────────────────────────
     monitor    = model.env.envs[0]
     ep_rewards = monitor.get_episode_rewards()
     ep_lengths = monitor.get_episode_lengths()
 
     if ep_rewards:
-        wins     = [r for r in ep_rewards if r > 0]
+        wins = [r for r in ep_rewards if r > 0]
         print("\n" + "=" * 44)
         print("  TRAINING SUMMARY")
         print("=" * 44)
