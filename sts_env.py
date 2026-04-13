@@ -21,21 +21,22 @@ import requests
 # ── Config ─────────────────────────────────────────────────────────────────────
 API = "http://127.0.0.1:8080"
 
-# Observation layout (132 total):
+# Observation layout (161 total):
 #   3   player base       hp, block, energy
 #  20   player powers     10 powers × (id_hash, amount)
-#  27   enemies           3 × 9 (hp, block, alive, name_hash, is_elite,
+#  45   enemies           5 × 9 (hp, block, alive, name_hash, is_elite,
 #                                 intent_atk, intent_dmg, intent_hits, power_count)
-#  18   enemy powers      3 enemies × 3 powers × (id_hash, amount)
+#  30   enemy powers      5 enemies × 3 powers × (id_hash, amount)
 #  60   hand cards        10 × 6 (card_hash, cost, type, upgraded, playable, primary_val)
-#   4   run context       floor_pct, alive_enemies, energy_pct, hp_pct
-OBS_SIZE = 132
+#   3   run context       floor_pct, alive_enemies, hp_pct
+OBS_SIZE = 161
 
-# Action space: MultiDiscrete([11, 3])
+# Action space: MultiDiscrete([11, 5])
 #   action[0]: 0-9 = play card at hand index, 10 = end turn
-#   action[1]: 0-2 = target enemy index (ignored if card doesn't need target or action=10)
-N_CARD_ACTIONS  = 11
-N_TARGET_CHOICES = 3
+#   action[1]: 0-4 = target enemy index (ignored if card doesn't need target or action=10)
+#   STS2 can have up to 5 enemies (Sentries, slime splits, etc.)
+N_CARD_ACTIONS   = 11
+N_TARGET_CHOICES = 5
 
 # Known elite enemy IDs — beating one gives +50 bonus reward
 _ELITE_IDS = {
@@ -98,7 +99,7 @@ def _encode_obs(state: dict) -> np.ndarray:
     enemy_feats  = []
     epower_feats = []
 
-    for i in range(3):
+    for i in range(5):
         if i < len(enemies):
             e        = enemies[i]
             alive    = 1.0 if e.get("is_alive") else 0.0
@@ -140,8 +141,8 @@ def _encode_obs(state: dict) -> np.ndarray:
 
     # ── Run context (4) ───────────────────────────────────────────────────────
     floor_pct  = run.get("floor", 1) / 55.0
-    alive_frac = alive_count / 3.0
-    run_ctx    = [floor_pct, alive_frac, energy, player_hp]
+    alive_frac = alive_count / 5.0
+    run_ctx    = [floor_pct, alive_frac, player_hp]
 
     obs = np.array(
         [player_hp, player_block, energy]
