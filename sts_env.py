@@ -247,6 +247,28 @@ class STSCombatEnv(gym.Env):
             _act("end_turn")
 
         time.sleep(0.1)
+        # Handle mid-combat interrupts (card selections, modals, etc.)
+        for _ in range(20):
+            mid = _get_state()
+            mid_actions = mid.get("available_actions", [])
+            if mid.get("in_combat") or mid.get("game_over") or not mid.get("in_combat") and not mid_actions:
+                break
+            if "select_deck_card" in mid_actions:
+                sel = mid.get("selection") or {}
+                cards = sel.get("cards", [])
+                if cards:
+                    _act("select_deck_card", card_index=cards[0]["index"])
+                else:
+                    _act("proceed")
+            elif "confirm_modal" in mid_actions:
+                _act("confirm_modal")
+            elif "dismiss_modal" in mid_actions:
+                _act("dismiss_modal")
+            elif "proceed" in mid_actions:
+                _act("proceed")
+            else:
+                break
+            time.sleep(0.1)
         new_state   = _get_state()
         new_cbt     = new_state.get("combat") or {}
         new_enemies = new_cbt.get("enemies", [])
