@@ -246,7 +246,7 @@ class STSCombatEnv(gym.Env):
                         )
                     else:
                         target = cards[0]
-                    _act("select_deck_card", card_index=target["index"])
+                    _act("select_deck_card", option_index=target["index"])
 
                 # Confirm if needed
                 time.sleep(0.2)
@@ -331,7 +331,7 @@ class STSCombatEnv(gym.Env):
                 sel   = mid.get("selection") or {}
                 cards = sel.get("cards", [])
                 if cards:
-                    _act("select_deck_card", card_index=cards[0]["index"])
+                    _act("select_deck_card", option_index=cards[0]["index"])
                 else:
                     _act("proceed")
             elif "confirm_modal" in mid_actions:
