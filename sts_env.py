@@ -425,8 +425,41 @@ class STSCombatEnv(gym.Env):
 # ── Training entry point ───────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    import os
+    import json
+    import time as _time
     from stable_baselines3 import PPO
     from stable_baselines3.common.env_checker import check_env
+    from stable_baselines3.common.callbacks import BaseCallback
+
+    HISTORY_FILE = "training_history.json"
+    MODELS_DIR   = "models"
+    os.makedirs(MODELS_DIR, exist_ok=True)
+
+    # Load previous run stats for comparison
+    history = []
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE) as f:
+            history = json.load(f)
+    prev = history[-1] if history else None
+
+    class RolloutCallback(BaseCallback):
+        """Prints improvement vs previous rollout after each rollout ends."""
+        def __init__(self):
+            super().__init__()
+            self._prev_mean = None
+
+        def _on_rollout_end(self):
+            rews = self.model.env.envs[0].get_episode_rewards()
+            if len(rews) < 2:
+                return True
+            recent = float(np.mean(rews[-3:]))
+            if self._prev_mean is not None:
+                delta = recent - self._prev_mean
+                sign  = "+" if delta >= 0 else ""
+                print(f"  └ Rollout avg (last 3 eps): {recent:.1f}  ({sign}{delta:.1f} vs previous)")
+            self._prev_mean = recent
+            return True
 
     env = STSCombatEnv()
 
@@ -434,51 +467,86 @@ if __name__ == "__main__":
     check_env(env, warn=True)
     print("Environment OK\n")
 
-    print("Training PPO agent...")
-    model = PPO(
-        "MlpPolicy",
-        env,
-        verbose=1,
-        device="cpu",
-        learning_rate=3e-4,
-        n_steps=256,
-        batch_size=64,
-        n_epochs=4,
-        gamma=0.99,
-    )
+    # Load existing model if available, else create new
+    if os.path.exists("sts_ppo_model.zip"):
+        print("Loading existing model for continued training...")
+        model = PPO.load("sts_ppo_model", env=env)
+        print("Loaded. Continuing from previous weights.\n")
+    else:
+        print("No existing model — starting fresh.\n")
+        model = PPO(
+            "MlpPolicy",
+            env,
+            verbose=1,
+            device="cpu",
+            learning_rate=3e-4,
+            n_steps=256,
+            batch_size=64,
+            n_epochs=4,
+            gamma=0.99,
+        )
 
-    import time as _time
+    print("Training PPO agent...")
     TIMESTEPS = 2000
     t_start   = _time.time()
-    model.learn(total_timesteps=TIMESTEPS)
+    model.learn(total_timesteps=TIMESTEPS, callback=RolloutCallback(), reset_num_timesteps=False)
     t_end   = _time.time()
     elapsed = t_end - t_start
+
+    # Versioned + latest save
+    ts_str   = _time.strftime("%Y%m%d_%H%M%S")
+    ver_path = os.path.join(MODELS_DIR, f"sts_ppo_{ts_str}")
+    model.save(ver_path)
     model.save("sts_ppo_model")
-    print("\nModel saved → sts_ppo_model.zip")
+    print(f"\nModels saved:\n  Latest : sts_ppo_model.zip\n  Version: {ver_path}.zip")
 
     # ── Post-training summary ─────────────────────────────────────────────────
-    monitor    = model.env.envs[0]
-    ep_rewards = monitor.get_episode_rewards()
-    ep_lengths = monitor.get_episode_lengths()
+    monitor       = model.env.envs[0]
+    ep_rewards    = monitor.get_episode_rewards()
+    ep_lengths    = monitor.get_episode_lengths()
     secs_per_step = elapsed / TIMESTEPS if TIMESTEPS else 0
 
     if ep_rewards:
-        wins = [r for r in ep_rewards if r > 0]
-        print("\n" + "=" * 44)
+        wins     = [r for r in ep_rewards if r > 0]
+        avg_rew  = float(np.mean(ep_rewards))
+        win_rate = 100 * len(wins) / len(ep_rewards)
+
+        print("\n" + "=" * 48)
         print("  TRAINING SUMMARY")
-        print("=" * 44)
-        print(f"  Timesteps          {TIMESTEPS:>8}")
-        print(f"  Total time         {elapsed:>7.1f}s  ({elapsed/60:.1f} min)")
-        print(f"  Time per step      {secs_per_step:>8.3f}s")
-        print(f"  Steps per second   {1/secs_per_step:>8.1f}")
-        print(f"  Episodes           {len(ep_rewards):>8}")
-        print(f"  Avg reward         {np.mean(ep_rewards):>8.1f}")
-        print(f"  Best episode       {max(ep_rewards):>8.1f}")
-        print(f"  Worst episode      {min(ep_rewards):>8.1f}")
-        print(f"  Std dev            {np.std(ep_rewards):>8.1f}")
-        print(f"  Avg length (steps) {np.mean(ep_lengths):>8.1f}")
-        print(f"  Wins (reward > 0)  {len(wins):>5} / {len(ep_rewards)}")
-        print(f"  Win rate           {100*len(wins)/len(ep_rewards):>7.0f}%")
-        print("=" * 44)
+        print("=" * 48)
+        print(f"  Timesteps           {TIMESTEPS:>8}")
+        print(f"  Total time          {elapsed:>7.1f}s  ({elapsed/60:.1f} min)")
+        print(f"  Time per step       {secs_per_step:>8.3f}s")
+        if secs_per_step > 0:
+            print(f"  Steps per second    {1/secs_per_step:>8.1f}")
+        print(f"  Episodes            {len(ep_rewards):>8}")
+        print(f"  Avg reward          {avg_rew:>8.1f}")
+        print(f"  Best episode        {max(ep_rewards):>8.1f}")
+        print(f"  Worst episode       {min(ep_rewards):>8.1f}")
+        print(f"  Std dev             {np.std(ep_rewards):>8.1f}")
+        print(f"  Avg length (steps)  {np.mean(ep_lengths):>8.1f}")
+        print(f"  Wins (reward > 0)   {len(wins):>5} / {len(ep_rewards)}")
+        print(f"  Win rate            {win_rate:>7.0f}%")
+        if prev:
+            d_rew  = avg_rew - prev["avg_reward"]
+            d_win  = win_rate - prev["win_rate"]
+            sr, sw = ("+" if d_rew >= 0 else ""), ("+" if d_win >= 0 else "")
+            print(f"  ── vs last run ─────────────────────────────")
+            print(f"  Reward change       {sr}{d_rew:>7.1f}  ({prev['avg_reward']:.1f} → {avg_rew:.1f})")
+            print(f"  Win rate change     {sw}{d_win:>6.0f}%  ({prev['win_rate']:.0f}% → {win_rate:.0f}%)")
+        print("=" * 48)
+
+        history.append({
+            "timestamp":   ts_str,
+            "timesteps":   TIMESTEPS,
+            "avg_reward":  avg_rew,
+            "best":        float(max(ep_rewards)),
+            "win_rate":    win_rate,
+            "episodes":    len(ep_rewards),
+            "secs_step":   secs_per_step,
+        })
+        with open(HISTORY_FILE, "w") as f:
+            json.dump(history, f, indent=2)
+        print(f"  History → {HISTORY_FILE}")
     else:
-        print("\nNo completed episodes — increase total_timesteps")
+        print(f"\nNo completed episodes in {elapsed:.1f}s — increase total_timesteps")
