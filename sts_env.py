@@ -306,8 +306,12 @@ class STSCombatEnv(gym.Env):
                     is_exhaust   = "exhaust"   in kind or "exhaust"   in prompt
 
                     if is_exhaust:
-                        # Exhaust from hand (combat_hand_select) — confirm with 0 selected if optional
-                        # Also handle confirm_selection action directly
+                        # Exhaust from hand (combat_hand_select)
+                        # If min_select=0 (optional), confirm with 0 cards
+                        # If min_select>0 (required), select the first card then confirm
+                        if min_s > 0 and cards:
+                            _act("select_deck_card", option_index=cards[0]["index"])
+                            time.sleep(0.2)
                         _act("confirm_selection")
                     elif is_remove:
                         target = (
@@ -435,11 +439,19 @@ class STSCombatEnv(gym.Env):
             if mid.get("in_combat") or mid.get("game_over") or not mid_actions:
                 break
             if "select_deck_card" in mid_actions:
-                sel   = mid.get("selection") or {}
-                cards = sel.get("cards", [])
-                if cards:
+                sel    = mid.get("selection") or {}
+                cards  = sel.get("cards", [])
+                min_s  = sel.get("min_select", 1)
+                prompt = sel.get("prompt", "").lower()
+                is_exhaust = "exhaust" in prompt or "exhaust" in sel.get("kind", "")
+                if cards and (min_s > 0 or not is_exhaust):
                     _act("select_deck_card", option_index=cards[0]["index"])
-                else:
+                    time.sleep(0.1)
+                # Confirm if needed
+                post2 = _get_state()
+                if "confirm_selection" in (post2.get("available_actions") or []):
+                    _act("confirm_selection")
+                elif not cards:
                     _act("proceed")
             elif "confirm_modal" in mid_actions:
                 _act("confirm_modal")
