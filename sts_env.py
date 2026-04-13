@@ -173,6 +173,7 @@ class STSCombatEnv(gym.Env):
         self._prev_enemy_hp    = 0
         self._prev_enemies     = []
         self._enemy_attacking  = False  # for block efficiency reward
+        self._turn_start_energy = 0     # energy at start of turn (for waste penalty)
 
     # ── Navigation ────────────────────────────────────────────────────────────
 
@@ -290,11 +291,12 @@ class STSCombatEnv(gym.Env):
         cbt     = state.get("combat") or {}
         enemies = cbt.get("enemies", [])
         player  = cbt.get("player") or {}
-        self._prev_player_hp  = run["current_hp"]
-        self._prev_player_blk = player.get("block", 0)
-        self._prev_enemy_hp   = sum(e.get("current_hp", 0) for e in enemies if e.get("is_alive"))
-        self._prev_enemies    = enemies
-        self._enemy_attacking = any(
+        self._prev_player_hp   = run["current_hp"]
+        self._prev_player_blk  = player.get("block", 0)
+        self._prev_enemy_hp    = sum(e.get("current_hp", 0) for e in enemies if e.get("is_alive"))
+        self._prev_enemies     = enemies
+        self._turn_start_energy = player.get("energy", 0)
+        self._enemy_attacking  = any(
             any(i.get("intent_type") == "Attack" for i in e.get("intents", []))
             for e in enemies if e.get("is_alive")
         )
@@ -358,6 +360,19 @@ class STSCombatEnv(gym.Env):
         enemy_reduced = max(0, self._prev_enemy_hp - new_enemy_hp)
         player_lost   = max(0, self._prev_player_hp - new_player_hp)
         reward        = float(enemy_reduced - 2.0 * player_lost)
+
+        # Energy waste penalty: -5 per unspent energy when turn ends
+        # Detect turn end: action was end_turn OR new turn started (energy refilled)
+        new_energy = new_player.get("energy", 0)
+        new_max_energy = run.get("max_energy", 3) or 3
+        if action == 10:  # explicit end_turn
+            leftover = self._turn_start_energy
+            reward -= leftover * 5.0
+        # Track energy for next turn
+        if new_energy >= new_max_energy - 1:  # turn just reset
+            self._turn_start_energy = new_energy
+        else:
+            self._turn_start_energy = new_energy
 
         # Block efficiency bonus: reward gaining block when enemy was going to attack
         if self._enemy_attacking:
