@@ -347,7 +347,13 @@ class STSCombatEnv(gym.Env):
                     n = monsters[0] if monsters else nodes[0]
                     _act("choose_map_node", option_index=n["index"])
             elif "choose_rest_option" in actions:
-                _act("choose_rest_option", option_id="rest")
+                # Get available rest options and pick the first (usually rest/heal)
+                rest_opts = (state.get("rest") or {}).get("options", [])
+                if rest_opts:
+                    opt_id = rest_opts[0].get("id") or rest_opts[0].get("option_id") or "rest"
+                    _act("choose_rest_option", option_id=opt_id)
+                else:
+                    _act("choose_rest_option", option_id="rest")
             elif "confirm_selection" in actions and "select_deck_card" in actions:
                 # Card selection with optional confirm — confirm with whatever is selected
                 _act("confirm_selection")
