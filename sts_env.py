@@ -31,6 +31,12 @@ API = "http://127.0.0.1:8080"
 #   4   run context       floor_pct, alive_enemies, energy_pct, hp_pct
 OBS_SIZE = 132
 
+# Action space: MultiDiscrete([11, 3])
+#   action[0]: 0-9 = play card at hand index, 10 = end turn
+#   action[1]: 0-2 = target enemy index (ignored if card doesn't need target or action=10)
+N_CARD_ACTIONS  = 11
+N_TARGET_CHOICES = 3
+
 # Known elite enemy IDs — beating one gives +50 bonus reward
 _ELITE_IDS = {
     "GREMLIN_NOB", "LAGAVULIN", "SENTRIES",
@@ -167,7 +173,8 @@ class STSCombatEnv(gym.Env):
         self.observation_space = gym.spaces.Box(
             low=0.0, high=1.0, shape=(OBS_SIZE,), dtype=np.float32
         )
-        self.action_space      = gym.spaces.Discrete(11)
+        # MultiDiscrete: [card_action (0-10), target (0-2)]
+        self.action_space = gym.spaces.MultiDiscrete([N_CARD_ACTIONS, N_TARGET_CHOICES])
         self._prev_player_hp   = 80
         self._prev_player_blk  = 0
         self._prev_enemy_hp    = 0
@@ -302,20 +309,26 @@ class STSCombatEnv(gym.Env):
         )
         return _encode_obs(state), {}
 
-    def step(self, action: int):
+    def step(self, action):
         state   = _get_state()
         cbt     = state.get("combat") or {}
         hand    = cbt.get("hand", [])
-        action  = int(action)
+        enemies = cbt.get("enemies", [])
 
-        if action < 10 and action < len(hand):
-            card = hand[action]
+        # Unpack MultiDiscrete action [card_idx, target_idx]
+        card_action  = int(action[0])
+        target_pref  = int(action[1])  # preferred target index (0-2)
+
+        if card_action < 10 and card_action < len(hand):
+            card = hand[card_action]
             if card.get("playable"):
-                targets = card.get("valid_target_indices", [])
-                if targets:
-                    _act("play_card", card_index=action, target_index=targets[0])
+                valid_targets = card.get("valid_target_indices", [])
+                if valid_targets:
+                    # Use agent's preferred target if valid, else first valid target
+                    target = target_pref if target_pref in valid_targets else valid_targets[0]
+                    _act("play_card", card_index=card_action, target_index=target)
                 else:
-                    _act("play_card", card_index=action)
+                    _act("play_card", card_index=card_action)
             else:
                 _act("end_turn")
         else:
@@ -365,7 +378,7 @@ class STSCombatEnv(gym.Env):
         # Detect turn end: action was end_turn OR new turn started (energy refilled)
         new_energy = new_player.get("energy", 0)
         new_max_energy = run.get("max_energy", 3) or 3
-        if action == 10:  # explicit end_turn
+        if card_action == 10:  # explicit end_turn
             leftover = self._turn_start_energy
             reward -= leftover * 5.0
         # Track energy for next turn
