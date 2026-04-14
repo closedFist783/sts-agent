@@ -33,7 +33,7 @@ API = "http://127.0.0.1:8080"
 #   3   run context       floor_pct, alive_enemies, hp_pct
 #   9   potions           3 slots × (occupied, can_use, potion_id_hash)
 #   5   deck composition  attack_ct, skill_ct, power_ct, status_ct, deck_size
-OBS_SIZE = 203
+OBS_SIZE = 213
 
 # Action space: MultiDiscrete([11, 5, 4])
 #   action[0]: 0-9 = play card at hand index, 10 = end turn
