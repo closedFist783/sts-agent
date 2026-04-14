@@ -614,6 +614,13 @@ class STSCombatEnv(gym.Env):
             # Floor progress bonus on win
             new_floor = run.get("floor", self._start_floor)
             reward   += (new_floor - self._start_floor) * 5
+            # Boss kill bonus (floors 17, 34, 51 approx)
+            if new_floor in (17, 34, 51):
+                reward += 100.0
+                print(f"  👑 ACT BOSS CLEARED floor {new_floor}! (+100)")
+            # HP efficiency bonus on win: more HP left = better play
+            hp_pct    = run.get("current_hp", 0) / max(run.get("max_hp", 80), 1)
+            reward   += hp_pct * 10.0
 
         self._prev_enemies = new_enemies
         return _encode_obs(new_state), reward, done, False, {}
