@@ -229,6 +229,12 @@ def _encode_obs(state: dict) -> np.ndarray:
     deck_size      = min(len(deck), 40) / 40.0
     deck_feats     = [deck_attack_ct, deck_skill_ct, deck_power_ct, deck_status_ct, deck_size]
 
+    # ── Relics (10 hashes) ───────────────────────────────────────────────────────
+    relics      = run.get("relics", [])
+    relic_feats = [_card_id_to_float(r.get("relic_id", "")) for r in relics[:10]]
+    relic_feats += [0.0] * (10 - len(relic_feats))
+
+
     obs = np.array(
         [player_hp, player_block, energy, discard_ct_legacy, draw_ct_legacy, hand_size, draw_ct, discard_ct]
         + pp_feats
@@ -237,7 +243,8 @@ def _encode_obs(state: dict) -> np.ndarray:
         + hand_feats
         + run_ctx
         + potion_feats
-        + deck_feats,
+        + deck_feats
+        + relic_feats,
         dtype=np.float32
     )
     assert obs.shape[0] == OBS_SIZE, f"Obs mismatch: got {obs.shape[0]}, want {OBS_SIZE}"
