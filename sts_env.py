@@ -394,10 +394,11 @@ class STSCombatEnv(gym.Env):
             elif "choose_rest_option" in actions:
                 rest_opts = (state.get("rest") or {}).get("options", [])
                 enabled   = [o for o in rest_opts if o.get("is_enabled")]
-                preferred = _meta.choose_rest_option(state)
+                preferred = _meta.choose_rest_option(state)  # returns 'HEAL' or 'SMITH'
                 target    = next((o for o in enabled if o.get("option_id") == preferred), None)
-                opt_id    = target.get("option_id", "HEAL") if target else "HEAL"
-                _act("choose_rest_option", option_id=opt_id)
+                # API uses option_index, not option_id
+                opt_idx   = target.get("index", 0) if target else 0
+                _act("choose_rest_option", option_index=opt_idx)
             elif "confirm_selection" in actions and "select_deck_card" in actions:
                 # Card selection with optional confirm — confirm with whatever is selected
                 _act("confirm_selection")
@@ -407,6 +408,9 @@ class STSCombatEnv(gym.Env):
                 _act("dismiss_modal")
             elif "close_main_menu_submenu" in actions:
                 _act("close_main_menu_submenu")
+            elif actions == ["discard_potion"] or (len(actions) == 1 and "discard" in actions[0]):
+                # Only option is discard potion — skip it, wait for state to change
+                time.sleep(0.3)
 
             time.sleep(0.1)
         return _get_state()
