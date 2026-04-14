@@ -293,15 +293,23 @@ class STSCombatEnv(gym.Env):
             elif "embark" in actions:
                 _act("embark")
             elif "choose_event_option" in actions:
-                _act("choose_event_option", option_index=0)
+                event = state.get("event") or {}
+                if event.get("event_id") == "NEOW":
+                    _act("choose_event_option", option_index=_meta.choose_neow_option(state))
+                else:
+                    _act("choose_event_option", option_index=0)
             elif "collect_rewards_and_proceed" in actions:
                 _act("collect_rewards_and_proceed")
-            elif "skip_reward_cards" in actions:
-                _act("skip_reward_cards")
-            elif "choose_reward_card" in actions:
-                opts = (state.get("reward") or {}).get("card_options", [])
-                if opts:
-                    _act("choose_reward_card", card_index=opts[0]["index"])
+            elif "skip_reward_cards" in actions or "choose_reward_card" in actions:
+                choice = _meta.choose_card_reward(state)
+                if choice >= 0:
+                    opts = (state.get("reward") or {}).get("card_options", [])
+                    if opts and choice < len(opts):
+                        _act("choose_reward_card", card_index=opts[choice]["index"])
+                    else:
+                        _act("skip_reward_cards")
+                else:
+                    _act("skip_reward_cards")
             elif "select_deck_card" in actions:
                 sel   = state.get("selection") or {}
                 cards = sel.get("cards", [])
@@ -367,15 +375,13 @@ class STSCombatEnv(gym.Env):
             elif "choose_map_node" in actions:
                 nodes = (state.get("map") or {}).get("available_nodes", [])
                 if nodes:
-                    monsters = [n for n in nodes if n.get("node_type") == "Monster"]
-                    n = monsters[0] if monsters else nodes[0]
-                    _act("choose_map_node", option_index=n["index"])
+                    best = _meta.choose_map_node(state, nodes)
+                    _act("choose_map_node", option_index=nodes[best]["index"])
             elif "choose_rest_option" in actions:
-                # Prefer HEAL (rest), fall back to first available option
                 rest_opts = (state.get("rest") or {}).get("options", [])
                 enabled   = [o for o in rest_opts if o.get("is_enabled")]
-                heal      = next((o for o in enabled if o.get("option_id") == "HEAL"), None)
-                target    = heal or (enabled[0] if enabled else None)
+                preferred = _meta.choose_rest_option(state)
+                target    = next((o for o in enabled if o.get("option_id") == preferred), None)
                 opt_id    = target.get("option_id", "HEAL") if target else "HEAL"
                 _act("choose_rest_option", option_id=opt_id)
             elif "confirm_selection" in actions and "select_deck_card" in actions:
@@ -566,6 +572,96 @@ class STSCombatEnv(gym.Env):
         pass
 
 
+# ── MetaAgent (rule-based outside-combat decisions) ─────────────────────────
+
+class MetaAgent:
+    """Handles non-combat decisions with smart heuristics. Replaces all hardcoded choices."""
+
+    def choose_rest_option(self, state: dict) -> str:
+        run    = state.get("run") or {}
+        hp_pct = run.get("current_hp", 80) / max(run.get("max_hp", 80), 1)
+        return "HEAL" if hp_pct < 0.6 else "SMITH"
+
+    def choose_card_reward(self, state: dict) -> int:
+        """Returns card index to take, or -1 to skip."""
+        opts = (state.get("reward") or {}).get("card_options", [])
+        if not opts:
+            return -1
+        RARITY = {"Rare": 4, "Uncommon": 3, "Common": 2, "Starter": 0}
+        CTYPE  = {"Power": 3, "Attack": 2, "Skill": 1}
+        best_i, best_s = 0, -1
+        for i, card in enumerate(opts):
+            s = RARITY.get(card.get("rarity", "Common"), 1) + CTYPE.get(card.get("card_type", "Skill"), 1)
+            if card.get("card_type") in ("Status", "Curse"):
+                s = -10
+            if s > best_s:
+                best_s, best_i = s, i
+        return best_i if best_s > 2 else -1
+
+    def choose_map_node(self, state: dict, nodes: list) -> int:
+        run    = state.get("run") or {}
+        hp_pct = run.get("current_hp", 80) / max(run.get("max_hp", 80), 1)
+        PRIORITY = {
+            "Elite":    5 if hp_pct > 0.6 else -1,
+            "Monster":  3,
+            "Rest":     4 if hp_pct < 0.5 else 2,
+            "Shop":     1,
+            "Event":    2,
+            "Treasure": 4,
+        }
+        best_i, best_s = 0, -1
+        for i, node in enumerate(nodes):
+            s = PRIORITY.get(node.get("node_type", ""), 1)
+            if s > best_s:
+                best_s, best_i = s, i
+        return best_i
+
+    def choose_neow_option(self, state: dict) -> int:
+        opts = (state.get("event") or {}).get("options", [])
+        if not opts:
+            return 0
+        safe     = [o for o in opts if not o.get("will_kill_player", False)]
+        no_loss  = [o for o in safe if "lose" not in o.get("description", "").lower()]
+        target   = no_loss[0] if no_loss else (safe[0] if safe else opts[0])
+        return target.get("index", 0)
+
+
+_meta = MetaAgent()
+
+# ── Weight migration ──────────────────────────────────────────────────────────
+
+def migrate_model_weights(old_path: str, new_env, new_obs_size: int):
+    """Load old model, zero-pad input layer to match new obs size, return new model."""
+    import torch
+    from stable_baselines3 import PPO as _PPO
+    print(f"Migrating weights from {old_path} to OBS_SIZE={new_obs_size}...")
+    old = _PPO.load(old_path, device="cpu")
+    old_size = old.observation_space.shape[0]
+    if old_size == new_obs_size:
+        print("  Obs sizes match — reusing directly")
+        old.set_env(new_env)
+        return old
+    new = _PPO("MlpPolicy", new_env, verbose=1, device="cpu",
+               learning_rate=3e-4, n_steps=256, batch_size=64, n_epochs=4, gamma=0.99)
+    old_sd, new_sd = old.policy.state_dict(), new.policy.state_dict()
+    for key in new_sd:
+        if key not in old_sd:
+            continue
+        ot, nt = old_sd[key], new_sd[key]
+        if ot.shape == nt.shape:
+            new_sd[key] = ot.clone()
+        elif key.endswith(".weight") and len(ot.shape) == 2 and ot.shape[0] == nt.shape[0] and ot.shape[1] < nt.shape[1]:
+            pad = torch.zeros_like(nt)
+            pad[:, :ot.shape[1]] = ot
+            new_sd[key] = pad
+            print(f"  Padded {key}: {list(ot.shape)} → {list(nt.shape)}")
+        else:
+            new_sd[key] = ot.clone()
+    new.policy.load_state_dict(new_sd)
+    print(f"  Migration done: {old_size} → {new_obs_size} dims")
+    return new
+
+
 # ── Analytics tracker ─────────────────────────────────────────────────────────
 
 class STSTracker:
@@ -675,24 +771,20 @@ if __name__ == "__main__":
     check_env(env, warn=True)
     print("Environment OK\n")
 
-    # Load existing model if available, else create new
+    # Load existing model (with weight migration if obs size changed)
     if os.path.exists("sts_ppo_model.zip"):
-        print("Loading existing model for continued training...")
-        model = PPO.load("sts_ppo_model", env=env, device="cpu")
-        print("Loaded. Continuing from previous weights.\n")
+        print("Loading existing model (migrating weights if obs size changed)...")
+        try:
+            model = migrate_model_weights("sts_ppo_model", env, OBS_SIZE)
+            print("Loaded. Continuing from previous weights.\n")
+        except Exception as e:
+            print(f"Migration failed ({e}) — starting fresh.\n")
+            model = PPO("MlpPolicy", env, verbose=1, device="cpu",
+                        learning_rate=3e-4, n_steps=256, batch_size=64, n_epochs=4, gamma=0.99)
     else:
         print("No existing model — starting fresh.\n")
-        model = PPO(
-            "MlpPolicy",
-            env,
-            verbose=1,
-            device="cpu",
-            learning_rate=3e-4,
-            n_steps=256,
-            batch_size=64,
-            n_epochs=4,
-            gamma=0.99,
-        )
+        model = PPO("MlpPolicy", env, verbose=1, device="cpu",
+                    learning_rate=3e-4, n_steps=256, batch_size=64, n_epochs=4, gamma=0.99)
 
     print("Training PPO agent...")
     TIMESTEPS = 25000
