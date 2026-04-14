@@ -35,12 +35,14 @@ API = "http://127.0.0.1:8080"
 #   5   deck composition  attack_ct, skill_ct, power_ct, status_ct, deck_size
 OBS_SIZE = 203
 
-# Action space: MultiDiscrete([11, 5])
+# Action space: MultiDiscrete([11, 5, 4])
 #   action[0]: 0-9 = play card at hand index, 10 = end turn
-#   action[1]: 0-4 = target enemy index (ignored if card doesn't need target or action=10)
-#   STS2 can have up to 5 enemies (Sentries, slime splits, etc.)
-N_CARD_ACTIONS   = 11
-N_TARGET_CHOICES = 5
+#   action[1]: 0-4 = target enemy index (ignored if no target needed or action=10)
+#   action[2]: 0 = no potion, 1-3 = use potion slot 0/1/2 (before playing card)
+#   STS2 can have up to 5 enemies, 3 potion slots
+N_CARD_ACTIONS    = 11
+N_TARGET_CHOICES  = 5
+N_POTION_ACTIONS  = 4   # 0=none, 1=slot0, 2=slot1, 3=slot2
 
 # Known elite enemy IDs — beating one gives +50 bonus reward
 _ELITE_IDS = {
@@ -259,8 +261,8 @@ class STSCombatEnv(gym.Env):
         self.observation_space = gym.spaces.Box(
             low=0.0, high=1.0, shape=(OBS_SIZE,), dtype=np.float32
         )
-        # MultiDiscrete: [card_action (0-10), target (0-2)]
-        self.action_space = gym.spaces.MultiDiscrete([N_CARD_ACTIONS, N_TARGET_CHOICES])
+        # MultiDiscrete: [card_action, target_enemy, potion_use]
+        self.action_space = gym.spaces.MultiDiscrete([N_CARD_ACTIONS, N_TARGET_CHOICES, N_POTION_ACTIONS])
         self._prev_player_hp    = 80
         self._prev_player_blk   = 0
         self._prev_enemy_hp     = 0
@@ -446,9 +448,24 @@ class STSCombatEnv(gym.Env):
         hand    = cbt.get("hand", [])
         enemies = cbt.get("enemies", [])
 
-        # Unpack MultiDiscrete action [card_idx, target_idx]
-        card_action  = int(action[0])
-        target_pref  = int(action[1])  # preferred target index (0-2)
+        # Unpack MultiDiscrete action [card_idx, target_idx, potion_idx]
+        card_action   = int(action[0])
+        target_pref   = int(action[1])  # preferred enemy target
+        potion_action = int(action[2])  # 0=none, 1=slot0, 2=slot1, 3=slot2
+
+        # Use potion BEFORE playing card (if requested)
+        if potion_action > 0:
+            potion_slot = potion_action - 1  # 1→0, 2→1, 3→2
+            potions = cbt.get("player", {}).get("potions", []) or state.get("run", {}).get("potions", [])
+            # Find potion at this slot
+            pot = next((p for p in potions if p.get("index") == potion_slot), None)
+            if pot and pot.get("can_use"):
+                if pot.get("requires_target"):
+                    # Target first living enemy for offensive potions
+                    enemy_target = next((e.get("index", 0) for e in enemies if e.get("is_alive")), 0)
+                    _act("use_potion", potion_index=potion_slot, target_index=enemy_target)
+                else:
+                    _act("use_potion", potion_index=potion_slot)
 
         if card_action < 10 and card_action < len(hand):
             card = hand[card_action]
