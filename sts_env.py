@@ -323,55 +323,45 @@ class STSCombatEnv(gym.Env):
                     _act("proceed")
                 else:
                     prompt = sel.get("prompt", "").lower()
+                    max_s = sel.get("max_select", 1)
                     is_remove    = "remove"    in kind or "remove"    in prompt
                     is_transform = "transform" in kind or "transform" in prompt
                     is_upgrade   = "upgrade"   in kind or "upgrade"   in prompt
                     is_exhaust   = "exhaust"   in kind or "exhaust"   in prompt
 
-                    if is_exhaust:
-                        # Exhaust from hand: select card if required, then confirm if available
-                        if cards:
-                            _act("select_deck_card", option_index=cards[0]["index"])
-                            time.sleep(0.2)
-                            post = _get_state()
-                            if "confirm_selection" in (post.get("available_actions") or []):
-                                _act("confirm_selection")
-                        else:
-                            # No cards to select, try confirm or proceed
-                            post = _get_state()
-                            acts = post.get("available_actions") or []
-                            if "confirm_selection" in acts:
-                                _act("confirm_selection")
-                            elif "proceed" in acts:
-                                _act("proceed")
-                    elif is_remove:
-                        target = (
-                            next((c for c in cards if "STRIKE" in c.get("card_id", "").upper()), None)
-                            or next((c for c in cards if "DEFEND" in c.get("card_id", "").upper()), None)
-                            or cards[0]
-                        )
-                    elif is_transform:
-                        target = (
-                            next((c for c in cards if "STRIKE" in c.get("card_id", "").upper()), None)
-                            or next((c for c in cards if "DEFEND" in c.get("card_id", "").upper()), None)
-                            or cards[0]
-                        )
-                    elif is_upgrade:
-                        target = (
-                            next((c for c in cards if "BASH" in c.get("card_id", "").upper()), None)
-                            or next((c for c in cards if "STRIKE" in c.get("card_id", "").upper()), None)
-                            or next((c for c in cards if "DEFEND" in c.get("card_id", "").upper()), None)
-                            or cards[0]
-                        )
+                    if is_exhaust and min_s == 0:
+                        # Optional exhaust — confirm with 0
+                        post = _get_state()
+                        acts = post.get("available_actions") or []
+                        if "confirm_selection" in acts:
+                            _act("confirm_selection")
+                        elif "proceed" in acts:
+                            _act("proceed")
                     else:
-                        target = cards[0]
-                    _act("select_deck_card", option_index=target["index"])
+                        # Build ordered list of cards to pick (best first)
+                        if is_remove or is_transform:
+                            strikes = [c for c in cards if "STRIKE" in c.get("card_id", "").upper()]
+                            defends = [c for c in cards if "DEFEND" in c.get("card_id", "").upper()]
+                            others  = [c for c in cards if c not in strikes and c not in defends]
+                            ordered = strikes + defends + others
+                        elif is_upgrade:
+                            bashes  = [c for c in cards if "BASH" in c.get("card_id", "").upper()]
+                            strikes = [c for c in cards if "STRIKE" in c.get("card_id", "").upper()]
+                            others  = [c for c in cards if c not in bashes and c not in strikes]
+                            ordered = bashes + strikes + others
+                        else:
+                            ordered = list(cards)
 
-                # Confirm if needed
-                time.sleep(0.2)
-                post = _get_state()
-                if "confirm_selection" in (post.get("available_actions") or []):
-                    _act("confirm_selection")
+                        # Select up to max_s cards (use min_s if max_s is large)
+                        n_to_select = min(max_s, len(ordered), max(min_s, 1))
+                        for i in range(n_to_select):
+                            _act("select_deck_card", option_index=ordered[i]["index"])
+                            time.sleep(0.15)
+
+                        # Confirm if available
+                        post = _get_state()
+                        if "confirm_selection" in (post.get("available_actions") or []):
+                            _act("confirm_selection")
 
             elif "proceed" in actions:
                 _act("proceed")
