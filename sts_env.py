@@ -694,9 +694,21 @@ def migrate_model_weights(old_path: str, new_env, new_obs_size: int):
             pad = torch.zeros_like(nt)
             pad[:, :ot.shape[1]] = ot
             new_sd[key] = pad
-            print(f"  Padded {key}: {list(ot.shape)} → {list(nt.shape)}")
-        else:
+            print(f"  Padded input {key}: {list(ot.shape)} → {list(nt.shape)}")
+        elif key.endswith(".weight") and len(ot.shape) == 2 and ot.shape[1] == nt.shape[1] and ot.shape[0] < nt.shape[0]:
+            pad = torch.zeros_like(nt)
+            pad[:ot.shape[0], :] = ot
+            new_sd[key] = pad
+            print(f"  Padded output {key}: {list(ot.shape)} → {list(nt.shape)}")
+        elif key.endswith(".bias") and len(ot.shape) == 1 and ot.shape[0] < nt.shape[0]:
+            pad = torch.zeros_like(nt)
+            pad[:ot.shape[0]] = ot
+            new_sd[key] = pad
+            print(f"  Padded bias {key}: {list(ot.shape)} → {list(nt.shape)}")
+        elif ot.shape == nt.shape:
             new_sd[key] = ot.clone()
+        else:
+            print(f"  Skip incompatible {key}: {list(ot.shape)} vs {list(nt.shape)}")
     new.policy.load_state_dict(new_sd)
     print(f"  Migration done: {old_size} → {new_obs_size} dims")
     return new
