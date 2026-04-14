@@ -384,10 +384,10 @@ class STSCombatEnv(gym.Env):
                 _act("open_chest")
             elif "choose_treasure_relic" in actions:
                 # Take the first available relic from chest
-                chest = state.get("chest") or {}
-                relics = chest.get("relics", [])
+                chest  = state.get("chest") or {}
+                relics = chest.get("relic_options", []) or chest.get("relics", [])
                 if relics:
-                    _act("choose_treasure_relic", relic_index=relics[0].get("index", 0))
+                    _act("choose_treasure_relic", option_index=relics[0].get("index", 0))
                 else:
                     _act("proceed")
             elif "choose_rest_option" in actions:
