@@ -591,6 +591,11 @@ class STSCombatEnv(gym.Env):
         if new_state.get("game_over"):
             done    = True
             reward -= 20.0
+            floor_reached = run.get("floor", "?")
+            hp_left       = run.get("current_hp", 0)
+            deck_size     = len(run.get("deck", []))
+            relics_held   = [r.get("relic_id", "?") for r in run.get("relics", []) if r.get("relic_id") != "BURNING_BLOOD"]
+            print(f"\n  ☠ DIED on floor {floor_reached} | {hp_left} HP | {deck_size} cards | relics: {relics_held}")
             # Floor progress bonus even on death
             new_floor = (new_state.get("run") or {}).get("floor", self._start_floor)
             reward   += (new_floor - self._start_floor) * 5
@@ -601,6 +606,11 @@ class STSCombatEnv(gym.Env):
                 for e in self._prev_enemies
             )
             reward += 50.0 if was_elite else 20.0
+            floor_now = run.get("floor", "?")
+            if was_elite:
+                print(f"  ⭐ ELITE CLEARED floor {floor_now}! (+50)")
+            else:
+                print(f"  ✓ Combat won floor {floor_now}")
             # Floor progress bonus on win
             new_floor = run.get("floor", self._start_floor)
             reward   += (new_floor - self._start_floor) * 5
