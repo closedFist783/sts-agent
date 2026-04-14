@@ -787,11 +787,25 @@ if __name__ == "__main__":
     check_env(env, warn=True)
     print("Environment OK\n")
 
-    # Load existing model (with weight migration if obs size changed)
-    if os.path.exists("sts_ppo_model.zip"):
-        print("Loading existing model (migrating weights if obs size changed)...")
+    # Find best model to load: main > latest checkpoint > fresh
+    def _find_best_model():
+        if os.path.exists("sts_ppo_model.zip"):
+            return "sts_ppo_model"
+        # Find latest checkpoint by step number
+        checkpoints = sorted(
+            [f for f in os.listdir(MODELS_DIR) if f.startswith("sts_checkpoint_") and f.endswith(".zip")],
+            key=lambda f: int(f.split("_step")[-1].replace(".zip", "")) if "_step" in f else 0,
+            reverse=True
+        ) if os.path.exists(MODELS_DIR) else []
+        if checkpoints:
+            return os.path.join(MODELS_DIR, checkpoints[0].replace(".zip", ""))
+        return None
+
+    best_model = _find_best_model()
+    if best_model:
+        print(f"Loading model: {best_model}.zip (migrating weights if obs size changed)...")
         try:
-            model = migrate_model_weights("sts_ppo_model", env, OBS_SIZE)
+            model = migrate_model_weights(best_model, env, OBS_SIZE)
             print("Loaded. Continuing from previous weights.\n")
         except Exception as e:
             print(f"Migration failed ({e}) — starting fresh.\n")
