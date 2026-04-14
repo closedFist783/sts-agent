@@ -21,8 +21,9 @@ import requests
 # ── Config ─────────────────────────────────────────────────────────────────────
 API = "http://127.0.0.1:8080"
 
-# Observation layout (194 total):
-#   6   player base       hp, block, energy, discard_ct, draw_ct, hand_size
+# Observation layout (200 total):
+#   8   player base       hp, block, energy, discard_ct_legacy, draw_ct_legacy,
+#                         hand_size, draw_ct, discard_ct
 #  20   player powers     10 powers × (id_hash, amount)
 #  65   enemies           5 × 13 (hp, max_hp, block, alive, name_hash, is_elite,
 #                                  intent_atk, intent_dmg, intent_hits, power_count,
@@ -31,7 +32,8 @@ API = "http://127.0.0.1:8080"
 #  60   hand cards        10 × 6 (card_hash, cost, type, upgraded, playable, primary_val)
 #   3   run context       floor_pct, alive_enemies, hp_pct
 #   9   potions           3 slots × (occupied, can_use, potion_id_hash)
-OBS_SIZE = 193
+#   5   deck composition  attack_ct, skill_ct, power_ct, status_ct, deck_size
+OBS_SIZE = 200
 
 # Action space: MultiDiscrete([11, 5])
 #   action[0]: 0-9 = play card at hand index, 10 = end turn
@@ -103,13 +105,17 @@ def _encode_obs(state: dict) -> np.ndarray:
     max_energy = run.get("max_energy", 3) or 3
     hand       = cbt.get("hand", [])
 
-    # ── Player base (7) ──────────────────────────────────────────────────────
-    player_hp    = run.get("current_hp", 80) / max_hp
-    player_block = player.get("block", 0) / 50.0
-    energy       = player.get("energy", 0) / max_energy
-    discard_ct   = len(cbt.get("discard", [])) / 20.0
-    draw_ct      = len(cbt.get("draw", [])) / 20.0
-    hand_size    = len(hand) / 10.0
+    # ── Player base (8) ──────────────────────────────────────────────────────
+    player_hp        = run.get("current_hp", 80) / max_hp
+    player_block     = player.get("block", 0) / 50.0
+    energy           = player.get("energy", 0) / max_energy
+    # Legacy keys (may return 0 if game uses different field names — kept for obs shape)
+    discard_ct_legacy = len(cbt.get("discard", [])) / 20.0
+    draw_ct_legacy    = len(cbt.get("draw", [])) / 20.0
+    hand_size         = len(hand) / 10.0
+    # Correct keys — draw_pile / discard_pile or nested under piles.draw / piles.discard
+    draw_ct    = min(len(cbt.get("draw_pile") or cbt.get("piles", {}).get("draw", [])), 40) / 40.0
+    discard_ct = min(len(cbt.get("discard_pile") or cbt.get("piles", {}).get("discard", [])), 40) / 40.0
 
     # ── Player powers (20 = 10 × 2) ──────────────────────────────────────────
     pp_feats = _power_feats(player.get("powers", []), max_powers=10)
@@ -155,16 +161,12 @@ def _encode_obs(state: dict) -> np.ndarray:
             pow_cnt  = min(len(e.get("powers", [])), 10) / 10.0
             # New: vulnerable / weak stacks from power list
             epowers     = e.get("powers", []) if alive else []
-            vuln_stacks = 0
-            weak_stacks = 0
-            for p in epowers:
-                pid = p.get("power_id", "").upper()
-                if "VULNERABLE" in pid:
-                    vuln_stacks = abs(p.get("amount") or 0)
-                elif "WEAK" in pid:
-                    weak_stacks = abs(p.get("amount") or 0)
-            vuln_norm  = min(vuln_stacks, 10) / 10.0
-            weak_norm  = min(weak_stacks, 10) / 10.0
+            vuln_norm  = next((min(abs(p.get("amount") or 0), 10) / 10.0
+                              for p in e.get("powers", [])
+                              if "VULNERABLE" in (p.get("power_id") or "").upper()), 0.0)
+            weak_norm  = next((min(abs(p.get("amount") or 0), 10) / 10.0
+                              for p in e.get("powers", [])
+                              if "WEAK" in (p.get("power_id") or "").upper()), 0.0)
             # New: is_lethal flag
             is_lethal  = 1.0 if (alive and max_lethal_dmg > 0 and max_lethal_dmg >= raw_hp) else 0.0
             enemy_feats  += [ehp, emaxhp, eblk, alive, name_h, is_elite,
@@ -212,14 +214,24 @@ def _encode_obs(state: dict) -> np.ndarray:
         else:
             potion_feats += [0.0, 0.0, 0.0]
 
+    # ── Deck composition (5) ─────────────────────────────────────────────────
+    deck          = run.get("deck", [])
+    deck_attack_ct = min(sum(1 for c in deck if c.get("card_type") == "Attack"), 30) / 30.0
+    deck_skill_ct  = min(sum(1 for c in deck if c.get("card_type") == "Skill"), 30) / 30.0
+    deck_power_ct  = min(sum(1 for c in deck if c.get("card_type") == "Power"), 30) / 30.0
+    deck_status_ct = min(sum(1 for c in deck if c.get("card_type") in ("Status", "Curse")), 10) / 10.0
+    deck_size      = min(len(deck), 40) / 40.0
+    deck_feats     = [deck_attack_ct, deck_skill_ct, deck_power_ct, deck_status_ct, deck_size]
+
     obs = np.array(
-        [player_hp, player_block, energy, discard_ct, draw_ct, hand_size]
+        [player_hp, player_block, energy, discard_ct_legacy, draw_ct_legacy, hand_size, draw_ct, discard_ct]
         + pp_feats
         + enemy_feats
         + epower_feats
         + hand_feats
         + run_ctx
-        + potion_feats,
+        + potion_feats
+        + deck_feats,
         dtype=np.float32
     )
     assert obs.shape[0] == OBS_SIZE, f"Obs mismatch: got {obs.shape[0]}, want {OBS_SIZE}"
@@ -494,12 +506,12 @@ class STSCombatEnv(gym.Env):
         player_lost   = max(0, self._prev_player_hp - new_player_hp)
         reward        = float(enemy_reduced - 2.0 * player_lost)
 
-        # Kill bonus: +max_hp/20 for each enemy killed this step
+        # Kill bonus: capped at 5.0 per kill
         for i in range(len(self._prev_enemies)):
             prev_e = self._prev_enemies[i]
             if prev_e.get("current_hp", 0) > 0:      # was alive
                 if i < len(new_enemies) and new_enemies[i].get("current_hp", 0) <= 0:
-                    reward += prev_e.get("max_hp", 0) / 20.0
+                    reward += min(prev_e.get("max_hp", 0) / 20.0, 5.0)
 
         # Energy waste penalty: -5 per unspent energy when turn ends
         # Detect turn end: action was end_turn OR new turn started (energy refilled)
@@ -619,6 +631,23 @@ if __name__ == "__main__":
             history = json.load(f)
     prev = history[-1] if history else None
 
+    class CheckpointCallback(BaseCallback):
+        def __init__(self, save_every=2500, save_dir="models"):
+            super().__init__()
+            self.save_every = save_every
+            self.save_dir   = save_dir
+            self._last_save = 0
+
+        def _on_step(self):
+            if self.num_timesteps - self._last_save >= self.save_every:
+                import time as _t
+                ts   = _t.strftime("%Y%m%d_%H%M%S")
+                path = os.path.join(self.save_dir, f"sts_checkpoint_{ts}_step{self.num_timesteps}")
+                self.model.save(path)
+                print(f"  [Checkpoint] Saved → {path}.zip")
+                self._last_save = self.num_timesteps
+            return True
+
     class RolloutCallback(BaseCallback):
         """Prints improvement vs previous rollout after each rollout ends."""
         def __init__(self):
@@ -668,7 +697,7 @@ if __name__ == "__main__":
     print("Training PPO agent...")
     TIMESTEPS = 25000
     t_start   = _time.time()
-    model.learn(total_timesteps=TIMESTEPS, callback=RolloutCallback(), reset_num_timesteps=False)
+    model.learn(total_timesteps=TIMESTEPS, callback=[RolloutCallback(), CheckpointCallback()], reset_num_timesteps=False)
     t_end   = _time.time()
     elapsed = t_end - t_start
 
