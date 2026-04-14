@@ -323,7 +323,14 @@ class STSCombatEnv(gym.Env):
                     _act("proceed")
                 else:
                     prompt = sel.get("prompt", "").lower()
-                    max_s = sel.get("max_select", 1)
+                    max_s  = sel.get("max_select", 1)
+                    # API sometimes reports min/max as 0/0 even for required selections
+                    # Parse count from prompt text: "choose 2 cards" -> 2
+                    import re as _re
+                    prompt_nums = _re.findall(r'choose.*?(\d+)', sel.get("prompt", "").lower())
+                    if prompt_nums and max_s == 0:
+                        max_s = int(prompt_nums[0])
+                        min_s = max_s
                     is_remove    = "remove"    in kind or "remove"    in prompt
                     is_transform = "transform" in kind or "transform" in prompt
                     is_upgrade   = "upgrade"   in kind or "upgrade"   in prompt
