@@ -378,6 +378,16 @@ class STSCombatEnv(gym.Env):
                 if nodes:
                     best = _meta.choose_map_node(state, nodes)
                     _act("choose_map_node", option_index=nodes[best]["index"])
+            elif "open_chest" in actions:
+                _act("open_chest")
+            elif "choose_treasure_relic" in actions:
+                # Take the first available relic from chest
+                chest = state.get("chest") or {}
+                relics = chest.get("relics", [])
+                if relics:
+                    _act("choose_treasure_relic", relic_index=relics[0].get("index", 0))
+                else:
+                    _act("proceed")
             elif "choose_rest_option" in actions:
                 rest_opts = (state.get("rest") or {}).get("options", [])
                 enabled   = [o for o in rest_opts if o.get("is_enabled")]
