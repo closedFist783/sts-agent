@@ -293,11 +293,8 @@ class STSCombatEnv(gym.Env):
             elif "embark" in actions:
                 _act("embark")
             elif "choose_event_option" in actions:
-                event = state.get("event") or {}
-                if event.get("event_id") == "NEOW":
-                    _act("choose_event_option", option_index=_meta.choose_neow_option(state))
-                else:
-                    _act("choose_event_option", option_index=0)
+                # Use MetaAgent for all events (not just Neow)
+                _act("choose_event_option", option_index=_meta.choose_neow_option(state))
             elif "collect_rewards_and_proceed" in actions:
                 _act("collect_rewards_and_proceed")
             elif "skip_reward_cards" in actions or "choose_reward_card" in actions:
@@ -617,13 +614,28 @@ class MetaAgent:
         return best_i
 
     def choose_neow_option(self, state: dict) -> int:
+        """Smart event option picker for all events (Neow, Unknown rooms, etc.)."""
         opts = (state.get("event") or {}).get("options", [])
         if not opts:
             return 0
-        safe     = [o for o in opts if not o.get("will_kill_player", False)]
-        no_loss  = [o for o in safe if "lose" not in o.get("description", "").lower()]
-        target   = no_loss[0] if no_loss else (safe[0] if safe else opts[0])
-        return target.get("index", 0)
+        avail = [o for o in opts if not o.get("is_locked", False) and not o.get("will_kill_player", False)]
+        if not avail:
+            avail = opts  # fallback: all options
+
+        def score(o):
+            desc = (o.get("description") or "").lower()
+            s = 0
+            if "lose" in desc and "max hp" in desc:   s -= 6
+            if "lose" in desc and " hp" in desc:       s -= 3
+            if "curse" in desc:                        s -= 3
+            if "gold" in desc and "lose" not in desc:  s += 2
+            if "card" in desc and "lose" not in desc:  s += 2
+            if "relic" in desc and "lose" not in desc: s += 3
+            if "heal" in desc:                         s += 1
+            return s
+
+        avail.sort(key=score, reverse=True)
+        return avail[0].get("index", 0)
 
 
 _meta = MetaAgent()
