@@ -327,9 +327,13 @@ class STSCombatEnv(gym.Env):
                     # API sometimes reports min/max as 0/0 even for required selections
                     # Parse count from prompt text: "choose 2 cards" -> 2
                     import re as _re
-                    prompt_nums = _re.findall(r'choose.*?(\d+)', sel.get("prompt", "").lower())
-                    if prompt_nums and max_s == 0:
-                        max_s = int(prompt_nums[0])
+                    raw_prompt = sel.get("prompt", "").lower()
+                    prompt_nums = _re.findall(r'choose.*?(\d+)', raw_prompt)
+                    if max_s == 0:
+                        if prompt_nums:
+                            max_s = int(prompt_nums[0])
+                        elif "choose a " in raw_prompt:  # "choose a card" = 1
+                            max_s = 1
                         min_s = max_s
                     is_remove    = "remove"    in kind or "remove"    in prompt
                     is_transform = "transform" in kind or "transform" in prompt
