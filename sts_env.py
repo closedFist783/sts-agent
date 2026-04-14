@@ -817,7 +817,7 @@ if __name__ == "__main__":
                     learning_rate=3e-4, n_steps=256, batch_size=64, n_epochs=4, gamma=0.99)
 
     print("Training PPO agent...")
-    TIMESTEPS = 25000
+    TIMESTEPS = 57000
     t_start   = _time.time()
     model.learn(total_timesteps=TIMESTEPS, callback=[RolloutCallback(), CheckpointCallback()], reset_num_timesteps=False)
     t_end   = _time.time()
