@@ -33,7 +33,7 @@ API = "http://127.0.0.1:8080"
 #   3   run context       floor_pct, alive_enemies, hp_pct
 #   9   potions           3 slots × (occupied, can_use, potion_id_hash)
 #   5   deck composition  attack_ct, skill_ct, power_ct, status_ct, deck_size
-OBS_SIZE = 200
+OBS_SIZE = 203
 
 # Action space: MultiDiscrete([11, 5])
 #   action[0]: 0-9 = play card at hand index, 10 = end turn
@@ -199,7 +199,11 @@ def _encode_obs(state: dict) -> np.ndarray:
     # ── Run context (3) ───────────────────────────────────────────────────────
     floor_pct  = run.get("floor", 1) / 55.0
     alive_frac = alive_count / 5.0
-    run_ctx    = [floor_pct, alive_frac, player_hp]
+    # Screen context: what kind of screen is the model on?
+    screen_h   = _card_id_to_float(state.get("screen", ""))
+    event_h    = _card_id_to_float((state.get("event") or {}).get("event_id", ""))
+    in_combat  = 1.0 if state.get("in_combat") else 0.0
+    run_ctx    = [floor_pct, alive_frac, player_hp, screen_h, event_h, in_combat]
 
     # ── Potions (9 = 3 × 3) ──────────────────────────────────────────────────
     potions      = run.get("potions", [])
