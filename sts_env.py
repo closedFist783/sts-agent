@@ -294,6 +294,10 @@ class STSCombatEnv(gym.Env):
             actions = state.get("available_actions", [])
             screen  = state.get("screen", "")
 
+            # Early return for learnable screens — let step() make the decision
+            if screen in ("EVENT", "REST", "REWARD", "CARD_SELECTION") or "choose_map_node" in actions:
+                return state
+
             if screen == "GAME_OVER":
                 _act("return_to_main_menu")
                 time.sleep(0.5)
@@ -427,11 +431,16 @@ class STSCombatEnv(gym.Env):
             time.sleep(0.1)
         return _get_state()
 
+    def _skip_to_non_combat_decision_or_combat(self) -> dict:
+        """Navigate until we reach combat OR a learnable meta-decision screen.
+        Delegates to _skip_to_combat which now stops at learnable screens."""
+        return self._skip_to_combat()
+
     # ── Gym interface ──────────────────────────────────────────────────────────
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        state = self._skip_to_combat()
+        state = self._skip_to_non_combat_decision_or_combat()
         run   = state.get("run")
         if not run:
             self._prev_player_hp   = 80
@@ -460,13 +469,82 @@ class STSCombatEnv(gym.Env):
         return _encode_obs(state), {}
 
     def step(self, action):
-        state   = _get_state()
+        state       = _get_state()
+        card_action = int(action[0])
+
+        # ── META DECISIONS: when not in combat, use card_action as choice index ──
+        if not state.get("in_combat"):
+            screen        = state.get("screen", "")
+            actions_avail = state.get("available_actions", [])
+            reward = 0.0
+            done   = False
+
+            if screen == "EVENT" and "choose_event_option" in actions_avail:
+                event   = state.get("event") or {}
+                options = event.get("options", [])
+                enabled = [o for o in options if not o.get("is_locked", False)]
+                idx     = min(card_action, len(enabled) - 1) if enabled else 0
+                _act("choose_event_option", option_index=enabled[idx].get("index", idx) if enabled else 0)
+                time.sleep(0.1)
+
+            elif screen == "REST" and "choose_rest_option" in actions_avail:
+                rest_opts = (state.get("rest") or {}).get("options", [])
+                enabled   = [o for o in rest_opts if o.get("is_enabled")]
+                idx       = min(card_action, len(enabled) - 1) if enabled else 0
+                _act("choose_rest_option", option_index=enabled[idx].get("index", idx) if enabled else 0)
+                time.sleep(0.1)
+
+            elif screen in ("REWARD", "CARD_SELECTION") and (
+                "choose_reward_card" in actions_avail or "skip_reward_cards" in actions_avail
+            ):
+                opts = (state.get("reward") or {}).get("card_options", [])
+                if card_action >= len(opts) or card_action == 4:  # skip
+                    if "skip_reward_cards" in actions_avail:
+                        _act("skip_reward_cards")
+                    elif "collect_rewards_and_proceed" in actions_avail:
+                        _act("collect_rewards_and_proceed")
+                elif opts:
+                    _act("choose_reward_card", card_index=opts[card_action]["index"])
+                time.sleep(0.1)
+
+            elif screen == "MAP" and "choose_map_node" in actions_avail:
+                nodes = (state.get("map") or {}).get("available_nodes", [])
+                if nodes:
+                    idx = min(card_action, len(nodes) - 1)
+                    _act("choose_map_node", option_index=nodes[idx]["index"])
+                time.sleep(0.1)
+
+            else:
+                # Unknown non-combat screen — let _skip_to_combat handle it
+                new_state = self._skip_to_combat()
+                return _encode_obs(new_state), 0.0, False, False, {}
+
+            # After meta action, navigate to next decision point or combat
+            new_state = _get_state()
+            if new_state.get("in_combat"):
+                pass  # reached combat — episode continues normally
+            elif new_state.get("game_over"):
+                done   = True
+                reward = -20.0
+            else:
+                # Navigate forward to next learnable screen or combat
+                new_state = self._skip_to_combat()
+
+            # Update tracking
+            run    = new_state.get("run") or {}
+            self._prev_player_hp = run.get("current_hp", self._prev_player_hp)
+            enemies = (new_state.get("combat") or {}).get("enemies", [])
+            self._prev_enemy_hp  = sum(e.get("current_hp", 0) for e in enemies if e.get("is_alive"))
+            self._prev_enemies   = enemies
+            return _encode_obs(new_state), reward, done, False, {}
+        # ── END META DECISIONS ────────────────────────────────────────────────
+
         cbt     = state.get("combat") or {}
         hand    = cbt.get("hand", [])
         enemies = cbt.get("enemies", [])
 
         # Unpack MultiDiscrete action [card_idx, target_idx, potion_idx]
-        card_action   = int(action[0])
+        # card_action already extracted above
         target_pref   = int(action[1])  # preferred enemy target
         potion_action = int(action[2])  # 0=none, 1=slot0, 2=slot1, 3=slot2
 
