@@ -276,6 +276,7 @@ class STSCombatEnv(gym.Env):
         self._prev_enemies      = []
         self._enemy_attacking   = False  # for block efficiency reward
         self._turn_start_energy = 0      # energy at start of turn (for waste penalty)
+        self.floors_reached: list = []  # floor on each episode end
         self._start_floor       = 1      # floor at episode start (for floor bonus)
 
     # ── Navigation ────────────────────────────────────────────────────────────
@@ -596,6 +597,7 @@ class STSCombatEnv(gym.Env):
             deck_size     = len(run.get("deck", []))
             relics_held   = [r.get("relic_id", "?") for r in run.get("relics", []) if r.get("relic_id") != "BURNING_BLOOD"]
             print(f"\n  ☠ DIED on floor {floor_reached} | {hp_left} HP | {deck_size} cards | relics: {relics_held}")
+            self.floors_reached.append(int(floor_reached) if str(floor_reached).isdigit() else 1)
             # Floor progress bonus even on death
             new_floor = (new_state.get("run") or {}).get("floor", self._start_floor)
             reward   += (new_floor - self._start_floor) * 5
@@ -611,6 +613,7 @@ class STSCombatEnv(gym.Env):
                 print(f"  ⭐ ELITE CLEARED floor {floor_now}! (+50)")
             else:
                 print(f"  ✓ Combat won floor {floor_now}")
+            self.floors_reached.append(int(floor_now) if str(floor_now).isdigit() else 1)
             # Floor progress bonus on win
             new_floor = run.get("floor", self._start_floor)
             reward   += (new_floor - self._start_floor) * 5
@@ -845,7 +848,17 @@ if __name__ == "__main__":
             if self._prev_mean is not None:
                 delta = recent - self._prev_mean
                 sign  = "+" if delta >= 0 else ""
-                print(f"  └ Rollout avg (last 3 eps): {recent:.1f}  ({sign}{delta:.1f} vs previous)")
+                # Floor stats
+                inner_env = self.model.env.envs[0].env  # unwrap Monitor
+                floors = getattr(inner_env, 'floors_reached', [])
+                if floors:
+                    avg_f  = float(np.mean(floors))
+                    max_f  = max(floors)
+                    recent_floors = floors[-10:]
+                    avg_recent = float(np.mean(recent_floors))
+                    print(f"  └ Rollout avg (last 3 eps): {recent:.1f}  ({sign}{delta:.1f}) | floor avg: {avg_recent:.1f} (all-time: {avg_f:.1f}, best: {max_f})")
+                else:
+                    print(f"  └ Rollout avg (last 3 eps): {recent:.1f}  ({sign}{delta:.1f} vs previous)")
             self._prev_mean = recent
             return True
 
