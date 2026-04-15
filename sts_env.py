@@ -387,8 +387,12 @@ class STSCombatEnv(gym.Env):
             elif "choose_map_node" in actions:
                 nodes = (state.get("map") or {}).get("available_nodes", [])
                 if nodes:
+                    cur_floor = (state.get("run") or {}).get("floor", 0)
                     best = _meta.choose_map_node(state, nodes)
-                    _act("choose_map_node", option_index=nodes[best]["index"])
+                    result = _act("choose_map_node", option_index=nodes[best]["index"])
+                    if not result.get("ok"):
+                        print(f"  [!] Map nav failed on floor {cur_floor}")
+                        time.sleep(0.5)
             elif "open_chest" in actions:
                 _act("open_chest")
             elif "choose_treasure_relic" in actions:
