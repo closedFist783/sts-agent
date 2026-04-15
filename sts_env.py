@@ -899,13 +899,16 @@ if __name__ == "__main__":
 
     print("Training PPO agent...")
     TIMESTEPS = 999_999_999  # runs until Ctrl+C
+    steps_before = model.num_timesteps
     t_start   = _time.time()
     try:
         model.learn(total_timesteps=TIMESTEPS, callback=[RolloutCallback(), CheckpointCallback()], reset_num_timesteps=False)
     except KeyboardInterrupt:
         print("\n\n[Ctrl+C] Stopping training...")
-    t_end   = _time.time()
-    elapsed = t_end - t_start
+    t_end         = _time.time()
+    elapsed       = t_end - t_start
+    steps_taken   = model.num_timesteps - steps_before
+    TIMESTEPS     = steps_taken  # report actual steps in summary
 
     # Versioned + latest save
     ts_str   = _time.strftime("%Y%m%d_%H%M%S")
