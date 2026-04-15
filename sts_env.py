@@ -885,9 +885,12 @@ if __name__ == "__main__":
                     learning_rate=3e-4, n_steps=256, batch_size=64, n_epochs=4, gamma=0.99)
 
     print("Training PPO agent...")
-    TIMESTEPS = 70000
+    TIMESTEPS = 999_999_999  # runs until Ctrl+C
     t_start   = _time.time()
-    model.learn(total_timesteps=TIMESTEPS, callback=[RolloutCallback(), CheckpointCallback()], reset_num_timesteps=False)
+    try:
+        model.learn(total_timesteps=TIMESTEPS, callback=[RolloutCallback(), CheckpointCallback()], reset_num_timesteps=False)
+    except KeyboardInterrupt:
+        print("\n\n[Ctrl+C] Stopping training...")
     t_end   = _time.time()
     elapsed = t_end - t_start
 
